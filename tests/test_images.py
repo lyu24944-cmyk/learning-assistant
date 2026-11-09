@@ -13,6 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+
+from tests.csrf_client import CsrfClient
 from PIL import Image, ImageDraw, ImageFont
 
 from src.api import app
@@ -46,7 +48,7 @@ class ImageDraftTest(unittest.TestCase):
         os.environ["LEARNING_ASSISTANT_PRIVATE"] = str(Path(self.tmp.name) / "private")
         os.environ.pop("LEARNING_ASSISTANT_TESSERACT", None)
         os.environ.pop("LEARNING_ASSISTANT_OCR_PROVIDER", None)
-        self.client = TestClient(app)
+        self.client = CsrfClient(TestClient(app))
         self.client.post("/api/register", json={"email": "ocr@example.com", "password": "secret-pass-1"})
 
     def tearDown(self) -> None:
@@ -159,7 +161,7 @@ class ImageDraftTest(unittest.TestCase):
         self.assertEqual(preview.status_code, 200)
         self.assertNotEqual(preview.content, original.content)
 
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         other.post("/api/register", json={"email": "other-ocr@example.com", "password": "secret-pass-1"})
         self.assertEqual(other.get(f"/api/image-drafts/{body['id']}/original").status_code, 404)
         self.assertEqual(other.get(f"/api/image-drafts/{body['id']}/preview").status_code, 404)
@@ -282,7 +284,7 @@ class ImageDraftTest(unittest.TestCase):
         self.assertNotIn("非法公历", [row["标题"] for row in self.client.get("/api/mine").json()["records"]])
 
     def test_anonymous_and_cross_user_cannot_touch_drafts(self) -> None:
-        anon = TestClient(app)
+        anon = CsrfClient(TestClient(app))
         self.assertEqual(anon.get("/api/ocr/status").status_code, 401)
         self.assertEqual(
             anon.post("/api/image-drafts", files={"file": ("a.png", _tiny_png(), "image/png")}).status_code,
@@ -295,7 +297,7 @@ class ImageDraftTest(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 201, created.text)
         draft_id = created.json()["id"]
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json={"email": "other-auth@example.com", "password": "secret-pass-1"}).status_code, 201)
         self.assertEqual(other.get(f"/api/image-drafts/{draft_id}").status_code, 404)
         self.assertEqual(other.post(f"/api/image-drafts/{draft_id}/confirm", json={"items": [_manual_item()]}).status_code, 404)

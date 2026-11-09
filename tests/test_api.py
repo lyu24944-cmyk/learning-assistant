@@ -8,6 +8,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from tests.csrf_client import CsrfClient
+
 from src.api import app
 from src.db import database_path
 
@@ -17,7 +19,7 @@ class ApiTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.previous = os.environ.get("LEARNING_ASSISTANT_DB")
         os.environ["LEARNING_ASSISTANT_DB"] = str(Path(self.tmp.name) / "test.sqlite")
-        self.client = TestClient(app)
+        self.client = CsrfClient(TestClient(app))
 
     def tearDown(self) -> None:
         close = getattr(self.client, "close", None)
@@ -67,8 +69,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/reminders", params={"today": "2026-11-08"}).status_code, 401)
 
     def test_two_users_see_catalog_but_not_each_others_rows(self) -> None:
-        alpha = TestClient(app)
-        beta = TestClient(app)
+        alpha = CsrfClient(TestClient(app))
+        beta = CsrfClient(TestClient(app))
         self.assertEqual(alpha.post("/api/register", json=_account("alpha@example.com")).status_code, 201)
         self.assertEqual(beta.post("/api/register", json=_account("beta@example.com")).status_code, 201)
 
@@ -176,7 +178,7 @@ class ApiTest(unittest.TestCase):
     def test_reminder_prefs_change_the_window_and_do_not_send_mail(self) -> None:
         self.assertEqual(self.client.get("/api/reminder-settings").status_code, 401)
         self.assertEqual(self.client.post("/api/register", json=_account("prefs@example.com")).status_code, 201)
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json=_account("other-prefs@example.com")).status_code, 201)
 
         fresh = self.client.get("/api/reminder-settings")
@@ -239,7 +241,7 @@ class ApiTest(unittest.TestCase):
     def test_mine_lists_only_private_rows_and_status_stays_after_update(self) -> None:
         self.assertEqual(self.client.get("/api/mine").status_code, 401)
         self.assertEqual(self.client.post("/api/register", json=_account("mine@example.com")).status_code, 201)
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json=_account("mine-other@example.com")).status_code, 201)
         created = self.client.post("/api/records", json=_private_row("手边的一条"))
         self.assertEqual(created.status_code, 201, created.text)
@@ -298,7 +300,7 @@ class ApiTest(unittest.TestCase):
 
         self.assertEqual(self.client.get("/api/weekly-review").status_code, 401)
         self.assertEqual(self.client.post("/api/register", json=_account("review@example.com")).status_code, 201)
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json=_account("review-other@example.com")).status_code, 201)
         empty = self.client.put("/api/weekly-review", json={"done": "", "stuck": "", "next": ""})
         self.assertEqual(empty.status_code, 400)
@@ -323,7 +325,7 @@ class ApiTest(unittest.TestCase):
     def test_courses_and_materials_are_private_indexes(self) -> None:
         self.assertEqual(self.client.get("/api/courses").status_code, 401)
         self.assertEqual(self.client.post("/api/register", json=_account("course@example.com")).status_code, 201)
-        other = TestClient(app)
+        other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json=_account("course-other@example.com")).status_code, 201)
         created = self.client.post("/api/courses", json={"name": "我填的课", "term": "", "notes": "自己记的"})
         self.assertEqual(created.status_code, 201, created.text)

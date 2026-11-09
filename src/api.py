@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import os
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from src.accounts import AccountError, login, logout, register, user_for_token
+from src.accounts import (
+    AccountError,
+    change_password,
+    delete_all_sessions,
+    list_sessions,
+    login,
+    logout,
+    register,
+    reset_password,
+    revoke_session,
+    user_for_token,
+)
 from src.bitmap import MAX_BYTES
 from src.config import load_settings, resolve_today
 from src.courses import add_course, add_material, list_courses, list_materials, material_file
@@ -23,11 +36,17 @@ from src.ocr import engine_status
 from src.prefs import get as get_reminder_prefs
 from src.prefs import update as update_reminder_prefs
 from src.ratelimit import (
+    change_password_blocked,
     clear_login_failures,
     login_blocked,
+    login_ip_blocked,
+    note_change_password_failure,
     note_login_failure,
+    note_login_ip,
     note_registration,
+    note_reset,
     register_blocked,
+    reset_blocked,
 )
 from src.review import get_current, save_current
 from src.security import hash_ip
@@ -43,6 +62,16 @@ from src.store import (
 )
 
 SESSION_COOKIE = "session"
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+DEFAULT_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173"}
+
+
+class ApiError(HTTPException):
+    """带错误码的 HTTPException。批次 5 再长成完整信封。"""
+
+    def __init__(self, status_code: int, detail: str, code: str, headers: dict | None = None) -> None:
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.code = code
 
 
 @asynccontextmanager
@@ -58,9 +87,42 @@ app.add_middleware(
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-CSRF-Token"],
 )
 configure_logging()
+
+
+@app.exception_handler(ApiError)
+async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "code": exc.code},
+        headers=exc.headers,
+    )
+
+
+def _csrf_enabled() -> bool:
+    raw = os.environ.get("LEARNING_ASSISTANT_CSRF", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _allowed_origins() -> set[str]:
+    raw = os.environ.get("LEARNING_ASSISTANT_ALLOWED_ORIGINS", "")
+    extra = {item.strip().rstrip("/") for item in raw.split(",") if item.strip()}
+    return DEFAULT_ORIGINS | extra
+
+
+def _origin_ok(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    if origin == "null":
+        return False
+    normalized = origin.rstrip("/")
+    if normalized in _allowed_origins():
+        return True
+    parsed = urlsplit(normalized)
+    return (parsed.scheme, parsed.netloc) == (request.url.scheme, request.url.netloc)
 
 
 @app.middleware("http")
@@ -93,9 +155,44 @@ async def request_log(request: Request, call_next):
         request_id_var.reset(token)
 
 
+@app.middleware("http")
+async def origin_guard(request: Request, call_next):
+    """写请求的 Origin 必须是同源或在允许列表里；顺手加四个安全响应头。"""
+    started = time.perf_counter()
+    if request.method in UNSAFE_METHODS and not _origin_ok(request):
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status=403,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error_code="origin_rejected",
+        )
+        response = JSONResponse(
+            status_code=403,
+            content={"detail": "请求来源不对，请从本站页面操作。", "code": "origin_rejected"},
+        )
+    else:
+        response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
+
+
 class Credentials(BaseModel):
     email: str
     password: str
+
+
+class ResetPasswordBody(BaseModel):
+    token: str
+    password: str
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class CourseBody(BaseModel):
@@ -177,7 +274,17 @@ def current_user(request: Request) -> dict:
     user = user_for_token(request.cookies.get(SESSION_COOKIE))
     if user is None:
         raise HTTPException(status_code=401, detail="请先登录")
+    if request.method in UNSAFE_METHODS and _csrf_enabled():
+        token = request.headers.get("X-CSRF-Token", "")
+        if not hmac.compare_digest(token, str(user["csrf_token"])):
+            raise ApiError(403, "请求校验失败，请刷新页面重试。", "csrf_failed")
     return user
+
+
+def _account_error(exc: AccountError) -> HTTPException:
+    if exc.code:
+        return ApiError(exc.status, str(exc), exc.code)
+    return HTTPException(status_code=exc.status, detail=str(exc))
 
 
 def _parse_today(today: str | None) -> dt.date | None:
@@ -237,15 +344,16 @@ def health() -> dict[str, bool]:
 def register_account(body: Credentials, request: Request, response: Response) -> dict[str, str]:
     client = _client_ip(request)
     if register_blocked(client):
-        raise HTTPException(
-            status_code=429,
-            detail="注册过于频繁，请稍后再试。",
+        raise ApiError(
+            429,
+            "注册过于频繁，请稍后再试。",
+            "rate_limited",
             headers={"Retry-After": "3600"},
         )
     try:
         user, token, csrf = register(body.email, body.password, **_session_meta(request))
     except AccountError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        raise _account_error(exc) from exc
     note_registration(client)
     _session(request, response, token)
     return {"email": str(user["email"]), "csrf_token": csrf}
@@ -253,11 +361,13 @@ def register_account(body: Credentials, request: Request, response: Response) ->
 
 @app.post("/api/login")
 def login_account(body: Credentials, request: Request, response: Response) -> dict[str, str]:
-    key = (_client_ip(request), body.email.strip().lower())
-    if login_blocked(key):
-        raise HTTPException(
-            status_code=429,
-            detail="登录失败次数过多，请稍后再试。",
+    client = _client_ip(request)
+    key = (client, body.email.strip().lower())
+    if login_ip_blocked(client) or login_blocked(key):
+        raise ApiError(
+            429,
+            "登录失败次数过多，请稍后再试。",
+            "rate_limited",
             headers={"Retry-After": "900"},
         )
     try:
@@ -265,17 +375,96 @@ def login_account(body: Credentials, request: Request, response: Response) -> di
     except AccountError as exc:
         if exc.status == 401:
             note_login_failure(key)
-        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+            note_login_ip(client)
+        raise _account_error(exc) from exc
     clear_login_failures(key)
     _session(request, response, token)
     return {"email": str(user["email"]), "csrf_token": csrf}
 
 
 @app.post("/api/logout")
-def logout_account(request: Request, response: Response) -> dict[str, bool]:
+def logout_account(
+    request: Request,
+    response: Response,
+    _user: dict = Depends(current_user),
+) -> dict[str, bool]:
     logout(request.cookies.get(SESSION_COOKIE))
     response.delete_cookie(SESSION_COOKIE, path="/", secure=_secure_cookies(request))
     return {"ok": True}
+
+
+@app.post("/api/auth/reset-password")
+def reset_account(body: ResetPasswordBody, request: Request, response: Response) -> dict[str, bool]:
+    client = _client_ip(request)
+    if reset_blocked(client):
+        raise ApiError(
+            429,
+            "尝试次数过多，请稍后再试。",
+            "rate_limited",
+            headers={"Retry-After": "3600"},
+        )
+    note_reset(client)
+    try:
+        reset_password(body.token, body.password)
+    except AccountError as exc:
+        raise _account_error(exc) from exc
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=_secure_cookies(request))
+    return {"ok": True}
+
+
+@app.post("/api/auth/change-password")
+def change_own_password(body: ChangePasswordBody, user: dict = Depends(current_user)) -> dict[str, bool]:
+    user_id = int(user["id"])
+    if change_password_blocked(user_id):
+        raise ApiError(
+            429,
+            "尝试次数过多，请稍后再试。",
+            "rate_limited",
+            headers={"Retry-After": "900"},
+        )
+    try:
+        change_password(
+            user_id,
+            body.current_password,
+            body.new_password,
+            keep_public_id=str(user["session_id"]),
+        )
+    except AccountError as exc:
+        if exc.code == "current_password_invalid":
+            note_change_password_failure(user_id)
+        raise _account_error(exc) from exc
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout-all")
+def logout_all(
+    request: Request,
+    response: Response,
+    user: dict = Depends(current_user),
+) -> dict[str, bool]:
+    delete_all_sessions(int(user["id"]))
+    response.delete_cookie(SESSION_COOKIE, path="/", secure=_secure_cookies(request))
+    return {"ok": True}
+
+
+@app.get("/api/sessions")
+def read_sessions(request: Request, user: dict = Depends(current_user)) -> dict:
+    return {"sessions": list_sessions(int(user["id"]), request.cookies.get(SESSION_COOKIE))}
+
+
+@app.delete("/api/sessions/{public_id}")
+def remove_session(
+    public_id: str,
+    request: Request,
+    response: Response,
+    user: dict = Depends(current_user),
+) -> dict[str, bool]:
+    if not revoke_session(int(user["id"]), public_id):
+        raise ApiError(404, "找不到这个会话。", "session_not_found")
+    current = public_id == str(user["session_id"])
+    if current:
+        response.delete_cookie(SESSION_COOKIE, path="/", secure=_secure_cookies(request))
+    return {"ok": True, "current": current}
 
 
 @app.get("/api/me")
