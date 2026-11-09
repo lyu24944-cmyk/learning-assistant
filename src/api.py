@@ -30,6 +30,7 @@ from src.ratelimit import (
     register_blocked,
 )
 from src.review import get_current, save_current
+from src.security import hash_ip
 from src.store import (
     add_user_record,
     delete_own_record,
@@ -192,6 +193,14 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
 
+def _session_meta(request: Request) -> dict[str, str]:
+    return {
+        "user_agent": request.headers.get("user-agent", ""),
+        "ip_hash": hash_ip(_client_ip(request)),
+        "previous_token": request.cookies.get(SESSION_COOKIE, ""),
+    }
+
+
 def _secure_cookies(request: Request) -> bool:
     """HTTPS 下给会话 Cookie 加 Secure。
 
@@ -234,12 +243,12 @@ def register_account(body: Credentials, request: Request, response: Response) ->
             headers={"Retry-After": "3600"},
         )
     try:
-        user, token = register(body.email, body.password)
+        user, token, csrf = register(body.email, body.password, **_session_meta(request))
     except AccountError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     note_registration(client)
     _session(request, response, token)
-    return {"email": str(user["email"])}
+    return {"email": str(user["email"]), "csrf_token": csrf}
 
 
 @app.post("/api/login")
@@ -252,14 +261,14 @@ def login_account(body: Credentials, request: Request, response: Response) -> di
             headers={"Retry-After": "900"},
         )
     try:
-        user, token = login(body.email, body.password)
+        user, token, csrf = login(body.email, body.password, **_session_meta(request))
     except AccountError as exc:
         if exc.status == 401:
             note_login_failure(key)
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     clear_login_failures(key)
     _session(request, response, token)
-    return {"email": str(user["email"])}
+    return {"email": str(user["email"]), "csrf_token": csrf}
 
 
 @app.post("/api/logout")
@@ -270,8 +279,13 @@ def logout_account(request: Request, response: Response) -> dict[str, bool]:
 
 
 @app.get("/api/me")
-def me(user: dict = Depends(current_user)) -> dict[str, str]:
-    return {"email": str(user["email"])}
+def me(user: dict = Depends(current_user)) -> dict:
+    return {
+        "email": str(user["email"]),
+        "email_verified": bool(user["email_verified"]),
+        "csrf_token": str(user["csrf_token"]),
+        "session_id": str(user["session_id"]),
+    }
 
 
 @app.get("/api/records")
