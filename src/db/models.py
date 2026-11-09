@@ -21,15 +21,35 @@ class User(Base):
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    email_verified_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    password_changed_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
 
 
 class UserSession(Base):
     __tablename__ = "sessions"
-    __table_args__ = (Index("ix_sessions_user_id", "user_id"),)
+    __table_args__ = (
+        Index("ix_sessions_user_id", "user_id"),
+        Index("ux_sessions_public_id", "public_id", unique=True),
+        Index("ix_sessions_expires_at", "expires_at"),
+    )
 
     token: Mapped[str] = mapped_column(Text, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    public_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    csrf_token: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    last_seen_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    ip_hash: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    expires_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+
+
+class RateLimit(Base):
+    __tablename__ = "rate_limits"
+
+    bucket_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    window_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ReminderPref(Base):
