@@ -416,6 +416,8 @@ ON CONFLICT(bucket_key) DO UPDATE SET
   window_start = excluded.window_start
 ```
 
+写之前先读一行：窗口没过期就沿用原来的 `window_start`，过期才用当前时间。不能直接拿 `int(time.time())` 当起点——跨秒时 `CASE` 会把计数重置成 1，30 次注册限制永远打不到。这个坑在 2026-11-09 的全量测试里出现过，回归用例是 `tests/test_ratelimit.py::test_hits_across_seconds_do_not_reset_the_window`。
+
 - 检查是「读一行 + 比时间」；记录是「一次 upsert」。检查和记录分开，登录成功时才能先判断、失败时才计数。
 - 清理用模块级时间戳节流：距上次清理不到 60 秒就跳过。
 - 数据库异常：`login_blocked` 等返回 `False`（放行），`note_*` 吞掉异常，记一条 `rate_limit_degraded` 日志。
