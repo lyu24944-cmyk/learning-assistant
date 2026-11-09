@@ -9,6 +9,7 @@ data/*.sqlite-*
 data/private/
 data/outbox/
 data/backups/
+data/secret.key
 .env*
 logs/
 .pytest_cache/

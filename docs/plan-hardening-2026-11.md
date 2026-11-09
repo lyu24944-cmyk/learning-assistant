@@ -2,7 +2,7 @@
 
 日期：2026-11-09
 范围：`_analysis/learning-assistant`
-状态：批次 0/1 已执行；批次 2-6 待确认。
+状态：批次 0/1/2 已执行；批次 3-6 待确认。
 修订：v1 17:45；v2 18:05，按「D1 假分歧、D2 拆需求、D3 部署决定、D4 删需求、批 4 改规约」重写。
 
 ## 执行记录（2026-11-09 18:20）
@@ -11,7 +11,9 @@
 - 批次 0 完成：git 基线 `5d42351`、CI、`pyproject.toml`、依赖拆分、`scripts/backup_db.py`、request_id JSON 日志；后端 60 个测试 + 前端 6 个测试通过。
 - 批次 1 完成：`src/db/` 包、11 张表 SQLAlchemy 模型、Alembic `0001`/`0002`、DDL 移出连接、老库自动备份并接管；真实库已升到 `0002`，用户/草稿行数不变。
 - WAL 实验：4 写 4 读 × 3 轮，WAL 每轮都出现 `attempt to write a readonly database`（最多只写入 400/800 行）；DELETE 0 错误、800 行全写入。默认保持 DELETE。
-- 未做：71 条 SQL 重写、批次 2-6。
+- 批次 2 完成（19:45）：迁移 `0003`、`users` 两列、`sessions` 六列、`rate_limits` 表；CSRF + Origin；14 天绝对过期 / 7 天空闲过期 / 登录换号；数据库固定窗口限流；CLI `reset-password`/`mark-verified`/`sessions`；改密码接口；前端最小 `api/client.js`、`/reset`、`/settings/account`。真实库已升到 `0003`，用户/会话/草稿行数不变，`foreign_key_check` 为空。全量测试通过（含前端构建）。
+- 顺带修批次 1 的洞：`session()` 的 SQLAlchemy 连接现在也跑 `busy_timeout` / `foreign_keys` / `synchronous`。
+- 未做：71 条 SQL 重写、批次 3-6。
 
 ## 0. 结论
 
@@ -323,6 +325,8 @@ scripts/backup_db.py      批次 0 已建
 ---
 
 ## 7. 批次 2：账号安全（删掉邮件需求）
+
+详细计划、概念解释和需要拍板的三处，见 [批次 2 计划](plan-batch2-accounts.md)。
 
 ### 7.1 数据模型
 

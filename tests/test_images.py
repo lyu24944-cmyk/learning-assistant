@@ -13,8 +13,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-
-from tests.csrf_client import CsrfClient
 from PIL import Image, ImageDraw, ImageFont
 
 from src.api import app
@@ -23,6 +21,7 @@ from src.image_drafts import confirm_draft
 from src.ocr import OcrUnavailable, describe_recognizer_languages, engine_status, transcribe
 from src.ocr_windows import dimension_exceeds, prepare_ocr_image
 from src.poster import parse_poster
+from tests.csrf_client import CsrfClient
 
 SYNTHETIC_MARK = "合成样例，不是真实通知"
 POSTER_LINES = [

@@ -8,10 +8,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.csrf_client import CsrfClient
-
 from src.api import app
 from src.db import database_path
+from tests.csrf_client import CsrfClient
 
 
 class ApiTest(unittest.TestCase):

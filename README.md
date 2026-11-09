@@ -94,7 +94,12 @@ python3 -m src.reminder --records templates/records.example.csv --today 2026-11-
 ## 部署前要设的
 
 - `LEARNING_ASSISTANT_SECURE_COOKIES=1`：站点在 HTTPS 反向代理后面、代理又没传 `X-Forwarded-Proto` 时，给会话 Cookie 加 Secure。本地 `http://127.0.0.1` 不要设，否则浏览器不回传登录态。设成 `0` 可以强制关闭。
-- `LEARNING_ASSISTANT_RATE_LIMIT=0`：关掉注册和登录失败的频率限制，方便压测或演示。默认是每个 IP 每小时 30 次注册、同一 IP 加同一邮箱 15 分钟内 10 次登录失败；阈值用 `LEARNING_ASSISTANT_REGISTER_LIMIT` 和 `LEARNING_ASSISTANT_LOGIN_FAILURE_LIMIT` 改。计数只在进程内，重启清零，多进程各算各的。
+- `LEARNING_ASSISTANT_SECRET`：重置令牌的签名密钥，至少 32 个字符。不设就自动生成 `data/secret.key`。这个文件不进 Git；丢了只会让未用的重置链接失效，数据不丢。
+- `LEARNING_ASSISTANT_WEB_BASE`：重置链接的前缀，默认 `http://127.0.0.1:5173`。部署到服务器时改成公网地址，否则打印出来的链接指向本机。
+- `LEARNING_ASSISTANT_CSRF=0`：只关闭 CSRF token 校验，Origin 校验仍开。给旧前端留一个版本的退路，确认前端都更新后删掉。
+- `LEARNING_ASSISTANT_ALLOWED_ORIGINS`：逗号分隔的额外 Origin，例如 `https://app.example.com`。同源请求不用写；反向代理没开 `--proxy-headers` 时用它兜底。
+- `LEARNING_ASSISTANT_RATE_LIMIT=0`：关掉全部频率限制，方便压测或演示。默认是每个 IP 每小时 30 次注册、同一 IP 加同一邮箱 15 分钟内 10 次登录失败、单 IP 15 分钟 60 次登录失败、单 IP 每小时 10 次重置、单用户 15 分钟 5 次改密码失败。计数在 `rate_limits` 表里，重启还在，多进程共享；阈值用对应的 `LEARNING_ASSISTANT_*_LIMIT` 改。
+- 账号相关的运维命令：`python -m src.accounts reset-password <email>` 生成 30 分钟一次性链接；`mark-verified <email>` 标记邮箱已验证；`sessions <email>` 列出会话。细节和威胁模型见 [docs/auth.md](docs/auth.md)。
 - 数据库连接设了 5 秒 busy_timeout；建表和迁移只在每个进程启动时跑一次（`src.db.init_db`），连接不再执行 DDL。SQLite 仍是单文件单写者，只允许 1 个写进程；要 2 个写进程时，改 `DATABASE_URL` 换 Postgres。
 - 迁移和备份：`python -m alembic upgrade head` 升级；老库第一次启动会自动备份到 `data/backups/pre-migration-*.sqlite` 再接管。日常备份用 `python scripts/backup_db.py`，默认保留 7 份并跑 `integrity_check`。
 - 不要开 WAL。2026-11-09 实测 4 写 4 读 × 3 轮，WAL 每轮都出现 `attempt to write a readonly database`；DELETE 模式 0 错误、800 行全写入。`LEARNING_ASSISTANT_SQLITE_JOURNAL` 只留给复现实验，不要在生产设成 `WAL`。
@@ -108,6 +113,7 @@ python3 -m src.reminder --records templates/records.example.csv --today 2026-11-
 | [docs/first-notice.md](docs/first-notice.md) | 已录入的 4 条，以及下一条怎么贴 |
 | [docs/roadmap-mid-nov.md](docs/roadmap-mid-nov.md) | 11 月中旬给别人用的计划 |
 | [docs/stack-and-scope.md](docs/stack-and-scope.md) | 为什么用这套框架，以及各模块何时做 |
+| [docs/auth.md](docs/auth.md) | 账号、会话、CSRF、重置密码和限流 |
 | [docs/one-pager.md](docs/one-pager.md) | 一页纸方案 |
 | [docs/feishu-fields.md](docs/feishu-fields.md) | 多维表格字段、示例表 |
 | [docs/feishu-automation.md](docs/feishu-automation.md) | 可选的飞书工作流 |
