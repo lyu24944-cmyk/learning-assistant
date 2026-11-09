@@ -27,6 +27,7 @@ _EXTRA_FIELDS = (
     "duration_ms",
     "user_id",
     "client_ip_hash",
+    "email_masked",
     "error_code",
 )
 _configured = False

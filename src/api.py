@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hmac
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -49,7 +50,7 @@ from src.ratelimit import (
     reset_blocked,
 )
 from src.review import get_current, save_current
-from src.security import hash_ip
+from src.security import hash_ip, mask_email
 from src.store import (
     add_user_record,
     delete_own_record,
@@ -64,6 +65,7 @@ from src.store import (
 SESSION_COOKIE = "session"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 DEFAULT_ORIGINS = {"http://127.0.0.1:5173", "http://localhost:5173"}
+logger = logging.getLogger("app.auth")
 
 
 class ApiError(HTTPException):
@@ -356,6 +358,7 @@ def register_account(body: Credentials, request: Request, response: Response) ->
         raise _account_error(exc) from exc
     note_registration(client)
     _session(request, response, token)
+    logger.info("auth.register", extra={"event": "register_ok", "email_masked": mask_email(body.email)})
     return {"email": str(user["email"]), "csrf_token": csrf}
 
 
@@ -376,9 +379,14 @@ def login_account(body: Credentials, request: Request, response: Response) -> di
         if exc.status == 401:
             note_login_failure(key)
             note_login_ip(client)
+            logger.warning(
+                "auth.login_failed",
+                extra={"event": "login_failed", "email_masked": mask_email(body.email)},
+            )
         raise _account_error(exc) from exc
     clear_login_failures(key)
     _session(request, response, token)
+    logger.info("auth.login", extra={"event": "login_ok", "email_masked": mask_email(body.email)})
     return {"email": str(user["email"]), "csrf_token": csrf}
 
 
@@ -407,8 +415,13 @@ def reset_account(body: ResetPasswordBody, request: Request, response: Response)
     try:
         reset_password(body.token, body.password)
     except AccountError as exc:
+        logger.warning(
+            "auth.reset_failed",
+            extra={"event": "reset_failed", "error_code": exc.code or "reset_failed"},
+        )
         raise _account_error(exc) from exc
     response.delete_cookie(SESSION_COOKIE, path="/", secure=_secure_cookies(request))
+    logger.info("auth.reset", extra={"event": "reset_ok"})
     return {"ok": True}
 
 
@@ -433,6 +446,7 @@ def change_own_password(body: ChangePasswordBody, user: dict = Depends(current_u
         if exc.code == "current_password_invalid":
             note_change_password_failure(user_id)
         raise _account_error(exc) from exc
+    logger.info("auth.password_changed", extra={"event": "password_changed", "user_id": user_id})
     return {"ok": True}
 
 

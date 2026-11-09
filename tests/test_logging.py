@@ -46,9 +46,11 @@ def test_json_formatter_outputs_one_line() -> None:
     record.path = "/api/health"
     record.status = 200
     record.duration_ms = 1.2
+    record.email_masked = "a***@example.com"
     line = JsonFormatter().format(record)
     assert "\n" not in line
     payload = json.loads(line)
     assert payload["request_id"] == "abc12345"
     assert payload["method"] == "GET"
     assert payload["status"] == 200
+    assert payload["email_masked"] == "a***@example.com"
