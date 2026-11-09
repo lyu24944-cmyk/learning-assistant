@@ -57,6 +57,9 @@ def _session_factory() -> sessionmaker[Session]:
 
 @contextmanager
 def session() -> Iterator[Session]:
+    # 和 connect() 一样，第一次用之前保证库已初始化；每个进程只跑一次。
+    if database_url().startswith("sqlite"):
+        ensure_initialized(database_path())
     current = _session_factory()()
     try:
         yield current

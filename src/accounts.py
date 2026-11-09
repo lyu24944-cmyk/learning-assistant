@@ -1,4 +1,7 @@
-"""邮箱和密码。密码只存 scrypt 哈希，登录态是 SQLite 里的会话。"""
+"""邮箱和密码。密码只存 scrypt 哈希，登录态是 SQLite 里的会话。
+
+批次 2 起这里用 SQLAlchemy 的 session()，不再直接写 sqlite3。
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,11 @@ import hmac
 import re
 import secrets
 
-from src.db import connect
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from src.db import session
+from src.db.models import User, UserSession
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _SESSION_DAYS = 14
@@ -50,76 +57,59 @@ def register(email: str, password: str) -> tuple[dict[str, str | int], str]:
     cleaned = _email(email)
     _password(password)
     now = _now()
-    connection = connect()
-    try:
-        exists = connection.execute("SELECT id FROM users WHERE email = ?", (cleaned,)).fetchone()
+    with session() as db:
+        exists = db.scalar(select(User.id).where(User.email == cleaned))
         if exists is not None:
             raise AccountError("这个邮箱已经注册。", 409)
-        cursor = connection.execute(
-            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
-            (cleaned, hash_password(password), now),
-        )
-        user_id = int(cursor.lastrowid)
-        token = _new_session(connection, user_id, now)
-        connection.commit()
-    finally:
-        connection.close()
+        user = User(email=cleaned, password_hash=hash_password(password), created_at=now)
+        db.add(user)
+        db.flush()
+        user_id = int(user.id)
+        token = _new_session(db, user_id, now)
     return {"id": user_id, "email": cleaned}, token
 
 
 def login(email: str, password: str) -> tuple[dict[str, str | int], str]:
     cleaned = email.strip().lower()
-    connection = connect()
-    try:
-        row = connection.execute(
-            "SELECT id, email, password_hash FROM users WHERE email = ?",
-            (cleaned,),
-        ).fetchone()
-        if row is None or not verify_password(password, row["password_hash"]):
+    with session() as db:
+        user = db.scalar(select(User).where(User.email == cleaned))
+        if user is None or not verify_password(password, user.password_hash):
             raise AccountError("邮箱或密码不正确。", 401)
-        user = {"id": int(row["id"]), "email": str(row["email"])}
-        token = _new_session(connection, int(user["id"]), _now())
-        connection.commit()
-    finally:
-        connection.close()
-    return user, token
+        token = _new_session(db, int(user.id), _now())
+        found = {"id": int(user.id), "email": str(user.email)}
+    return found, token
 
 
 def logout(token: str | None) -> None:
     if not token:
         return
-    connection = connect()
-    try:
-        connection.execute("DELETE FROM sessions WHERE token = ?", (token,))
-        connection.commit()
-    finally:
-        connection.close()
+    with session() as db:
+        row = db.get(UserSession, token)
+        if row is not None:
+            db.delete(row)
 
 
 def user_for_token(token: str | None) -> dict[str, str | int] | None:
     if not token:
         return None
-    connection = connect()
-    try:
-        row = connection.execute(
-            """
-            SELECT users.id AS id, users.email AS email, sessions.created_at AS created_at
-            FROM sessions JOIN users ON users.id = sessions.user_id
-            WHERE sessions.token = ?
-            """,
-            (token,),
-        ).fetchone()
+    with session() as db:
+        row = db.execute(
+            select(UserSession, User)
+            .join(User, User.id == UserSession.user_id)
+            .where(UserSession.token == token)
+        ).first()
         if row is None:
             return None
-        user = {"id": int(row["id"]), "email": str(row["email"])}
-        created = dt.datetime.fromisoformat(row["created_at"])
-        if _now_dt() - created > dt.timedelta(days=_SESSION_DAYS):
-            connection.execute("DELETE FROM sessions WHERE token = ?", (token,))
-            connection.commit()
+        current, user = row
+        try:
+            created = dt.datetime.fromisoformat(current.created_at)
+        except ValueError:
+            db.delete(current)
             return None
-        return user
-    finally:
-        connection.close()
+        if _now_dt() - created > dt.timedelta(days=_SESSION_DAYS):
+            db.delete(current)
+            return None
+        return {"id": int(user.id), "email": str(user.email)}
 
 
 def _email(email: str) -> str:
@@ -134,12 +124,9 @@ def _password(password: str) -> None:
         raise AccountError(f"密码至少 {MIN_PASSWORD} 位。", 400)
 
 
-def _new_session(connection, user_id: int, now: str) -> str:
+def _new_session(db: Session, user_id: int, now: str) -> str:
     token = secrets.token_urlsafe(32)
-    connection.execute(
-        "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
-        (token, user_id, now),
-    )
+    db.add(UserSession(token=token, user_id=user_id, created_at=now))
     return token
 
 
