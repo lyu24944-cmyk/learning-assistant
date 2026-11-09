@@ -28,12 +28,14 @@ npm run dev
 - 截止日期的判断已经在 Python 里。FastAPI 只负责把 `src/timeline.py` 的结果变成 HTTP，网页不再算一遍「剩余几天」。
 - React + Vite 只做登录后的清单。开发时改页面刷新快，构建结果是静态文件，和 API 分开部署。
 - SQLite 是一个文件。11 月中旬只有一个应用进程时，不用先搭数据库服务器。
+- 11 张表有 SQLAlchemy 模型和 Alembic 版本表。加字段写一个 revision，空库和老库都能升到同一结构；建表和迁移只在启动时跑一次，不再每个连接执行 DDL。
 - 邮箱和密码不依赖发信服务，注册不会卡在邮件商上。
 
 ## 这样选的代价
 
 - 本地要同时开 API 和前端两个进程。只跑其中一个，页面会提示读不到时间线。
-- SQLite 经不起多个进程同时写。部署成两份 API 时会锁库或写坏。
+- SQLite 仍然只允许一个写进程。`busy_timeout` 让并发写排队，但开第二个写进程仍可能锁库。2026-11-09 实测 WAL 在 Windows 上不稳定（4 写 4 读 × 3 轮，每轮都有 `attempt to write a readonly database`），所以默认保持 DELETE，不靠 WAL 解决多进程。
+- 旧模块仍用 `sqlite3` 原生 SQL，新模块用 `session()`。换 Postgres 时，旧模块要先被改到、换成 SQLAlchemy 查询；`tests/test_dialect.py` 保证不会静默长出方言 SQL。
 - Vite 不做服务端渲染。第一次打开要等接口返回，不适合靠搜索引擎获客。这个产品不靠那个。
 - 手贴页面还没做。写入口 `POST /api/records` 已经要求登录，并且只写入当前用户的行。共享目录仍然只能改 CSV，不能从网页改。
 
@@ -53,7 +55,7 @@ npm run dev
 - 部署平台不能给 SQLite 一块稳定磁盘，文件会在重启后消失。
 - 需要备份、恢复，而复制单个文件已经不够。
 
-表仍然按 `user_id` 分开。换库时只改 `src/store.py` 的读写，不改时间线规则，也不改已经核对过的公历日期。
+表仍然按 `user_id` 分开。连接串只在 `src/db/paths.py` 读一次：`DATABASE_URL` 优先，默认 `sqlite:///data/app.sqlite`。迁移用 `python -m alembic upgrade head`，老库第一次启动会自动备份并接管。换库时先确认 `tests/test_dialect.py` 仍通过，再把被用到的模块从 `sqlite3` 换成 `session()`；时间线规则和已核对日期不变。
 
 ## 各块什么时候做完
 

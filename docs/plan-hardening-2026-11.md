@@ -2,8 +2,16 @@
 
 日期：2026-11-09
 范围：`_analysis/learning-assistant`
-状态：已按复核意见修订；备份完成，开始执行批次 0/1。
+状态：批次 0/1 已执行；批次 2-6 待确认。
 修订：v1 17:45；v2 18:05，按「D1 假分歧、D2 拆需求、D3 部署决定、D4 删需求、批 4 改规约」重写。
+
+## 执行记录（2026-11-09 18:20）
+
+- 备份：`_analysis/learning-assistant.backup-2026-11-09-1756/` 和同名 `.tar.gz`；`diff -r` 无差异，`PRAGMA integrity_check=ok`，用户 1 行、识图草稿 1 行。
+- 批次 0 完成：git 基线 `5d42351`、CI、`pyproject.toml`、依赖拆分、`scripts/backup_db.py`、request_id JSON 日志；后端 60 个测试 + 前端 6 个测试通过。
+- 批次 1 完成：`src/db/` 包、11 张表 SQLAlchemy 模型、Alembic `0001`/`0002`、DDL 移出连接、老库自动备份并接管；真实库已升到 `0002`，用户/草稿行数不变。
+- WAL 实验：4 写 4 读 × 3 轮，WAL 每轮都出现 `attempt to write a readonly database`（最多只写入 400/800 行）；DELETE 0 错误、800 行全写入。默认保持 DELETE。
+- 未做：71 条 SQL 重写、批次 2-6。
 
 ## 0. 结论
 
@@ -266,6 +274,7 @@ scripts/backup_db.py      批次 0 已建
 5. **WAL go/no-go 实验**：`scripts/bench_sqlite.py`，4 个写线程 × 200 次 + 4 个读线程 × 200 次，在 Windows 上跑 3 轮。
    - 0 次 `readonly database` / 未恢复的 `database is locked`：开 `journal_mode=WAL`；
    - 任意一次复现：保持 `DELETE`，记录结论，不再尝试。
+   - **2026-11-09 结果**：WAL 3 轮全部复现 `attempt to write a readonly database`，第 1/2 轮只写入 200/800 行，第 3 轮 400/800 行；DELETE 3 轮 0 错误、800/800 行，约 5.6-6.0 秒。默认保持 DELETE，`LEARNING_ASSISTANT_SQLITE_JOURNAL` 只用于复现实验。
 6. 单写进程写进 README 和 `docs/stack-and-scope.md`：SQLite 阶段只允许 1 个 API 写进程；读进程可以多个。要 2 个写进程，走 6.5。
 
 ### 6.4 索引

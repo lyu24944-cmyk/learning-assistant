@@ -55,12 +55,12 @@ class JsonFormatter(logging.Formatter):
 def configure_logging() -> None:
     """进程内只配置一次。uvicorn 启动时可能重置 root，lifespan 里会再调一次。"""
     global _configured
-    if _configured:
+    root = logging.getLogger()
+    if _configured and root.handlers:
         return
     level = os.environ.get("LEARNING_ASSISTANT_LOG_LEVEL", "INFO").upper()
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter())
-    root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(level)
     _configured = True

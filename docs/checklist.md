@@ -11,6 +11,16 @@
 - [x] 邮箱和密码可以注册、登录、退出。密码只存哈希。未登录访问时间线得到 401。登录后看到 CSV 里的 4 条，没有新编日期（2026-11-02）。私人写入带 user_id。
 - [ ] 真实记录仍是 4 条，不足 10 条。下面第 1 条先不要勾。
 
+## 加固（2026-11-09）
+
+- [x] 批次 0：git 基线、CI、ruff/pytest 配置、备份脚本、request_id JSON 日志（2026-11-09）。
+- [x] 批次 1：11 张表 SQLAlchemy 模型、Alembic 0001/0002、DDL 移出连接、老库接管、方言泄漏测试；WAL 实测不稳定，保持 DELETE（2026-11-09）。
+- [ ] 批次 2：CSRF、会话过期、DB 限流、CLI 重置密码、`email_verified_at`。
+- [ ] 批次 3：识图 202 + 有界队列 + 轮询 + 去重 + 重启恢复。
+- [ ] 批次 4A：`api/client.js`、`useAsync`、`AuthContext`、`routes.jsx` 骨架。
+- [ ] 批次 5：错误信封、JSON 日志完整字段、metrics、`/api/ready`、cursor 分页。
+- [ ] 批次 6：Ctrl+V / 拖拽识图，作为第一个新结构页面。
+
 本地助手读 `data/records.csv`。飞书「截止」表仍是可选旁路，示例 10 条留在 `templates/records.example.csv`。继续加行按 [第一条真实通知](first-notice.md)。不要改去抓取、课程库或微信。
 
 ## 模块放开顺序

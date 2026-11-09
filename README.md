@@ -95,7 +95,9 @@ python3 -m src.reminder --records templates/records.example.csv --today 2026-11-
 
 - `LEARNING_ASSISTANT_SECURE_COOKIES=1`：站点在 HTTPS 反向代理后面、代理又没传 `X-Forwarded-Proto` 时，给会话 Cookie 加 Secure。本地 `http://127.0.0.1` 不要设，否则浏览器不回传登录态。设成 `0` 可以强制关闭。
 - `LEARNING_ASSISTANT_RATE_LIMIT=0`：关掉注册和登录失败的频率限制，方便压测或演示。默认是每个 IP 每小时 30 次注册、同一 IP 加同一邮箱 15 分钟内 10 次登录失败；阈值用 `LEARNING_ASSISTANT_REGISTER_LIMIT` 和 `LEARNING_ASSISTANT_LOGIN_FAILURE_LIMIT` 改。计数只在进程内，重启清零，多进程各算各的。
-- 数据库连接设了 5 秒 busy_timeout，并发写会排队而不是立刻报锁，但仍然是单文件单写者。要同时开两个以上 API 进程时，按 [框架和范围](docs/stack-and-scope.md) 换 Postgres。
+- 数据库连接设了 5 秒 busy_timeout；建表和迁移只在每个进程启动时跑一次（`src.db.init_db`），连接不再执行 DDL。SQLite 仍是单文件单写者，只允许 1 个写进程；要 2 个写进程时，改 `DATABASE_URL` 换 Postgres。
+- 迁移和备份：`python -m alembic upgrade head` 升级；老库第一次启动会自动备份到 `data/backups/pre-migration-*.sqlite` 再接管。日常备份用 `python scripts/backup_db.py`，默认保留 7 份并跑 `integrity_check`。
+- 不要开 WAL。2026-11-09 实测 4 写 4 读 × 3 轮，WAL 每轮都出现 `attempt to write a readonly database`；DELETE 模式 0 错误、800 行全写入。`LEARNING_ASSISTANT_SQLITE_JOURNAL` 只留给复现实验，不要在生产设成 `WAL`。
 - 联调脚本读 `LEARNING_ASSISTANT_BASE`，默认 `http://127.0.0.1:8010`。
 
 ## 其他页面

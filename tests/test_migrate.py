@@ -165,10 +165,11 @@ class OldSchemaMigrationTest(unittest.TestCase):
         def tracking(path, *args, **kwargs):
             return Tracking(real_connect(path, *args, **kwargs), path)
 
-        with patch("src.db.sqlite3.connect", tracking):
-            with patch("src.migrate._migration_checkpoint", side_effect=RuntimeError("stop")):
-                with self.assertRaises(RuntimeError):
-                    connect()
+        with patch("src.db.sqlite_adapter.backup_database", return_value=Path("backup.sqlite")):
+            with patch("src.db.sqlite_adapter.sqlite3.connect", tracking):
+                with patch("src.migrate._migration_checkpoint", side_effect=RuntimeError("stop")):
+                    with self.assertRaises(RuntimeError):
+                        connect()
         self.assertTrue(closed, "迁移失败时必须关掉 SQLite 连接，否则 Windows 无法删除测试库")
         self.path.unlink()
 

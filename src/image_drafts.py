@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
 
 from src.bitmap import allocate_key, inspect_bitmap, preview_bytes, private_file, write_private
 from src.config import load_settings, resolve_today
 from src.db import connect
+from src.db.sqlite_adapter import rollback_quiet
 from src.ocr import OcrFailed, OcrUnavailable, engine_status, transcribe
 from src.poster import parse_poster
 from src.records import validate_records
@@ -348,12 +348,4 @@ def _remove_quiet(*relative_paths: str) -> None:
 
 
 def _rollback_quiet(connection) -> None:
-    """BEGIN IMMEDIATE 没拿到锁时没有事务可回滚。
-
-    直接 ROLLBACK 会抛 "cannot rollback - no transaction is active"，
-    把真正的异常（例如库被占用）盖掉。
-    """
-    try:
-        connection.execute("ROLLBACK")
-    except sqlite3.OperationalError:
-        pass
+    rollback_quiet(connection)

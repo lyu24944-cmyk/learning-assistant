@@ -35,3 +35,34 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: learning
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt "psycopg[binary]"
+      - name: 迁移
+        run: python -m alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/learning
+      - name: 结构与迁移测试（不跑全量 pytest）
+        run: python -m pytest -q tests/test_schema_models.py
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/learning

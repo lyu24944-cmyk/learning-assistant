@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ from src.accounts import AccountError, login, logout, register, user_for_token
 from src.bitmap import MAX_BYTES
 from src.config import load_settings, resolve_today
 from src.courses import add_course, add_material, list_courses, list_materials, material_file
+from src.db import bootstrap
 from src.image_drafts import cancel_draft, confirm_draft, create_draft, draft_file, get_draft
 from src.logging import configure_logging, log_request, new_request_id, request_id_var
 from src.ocr import engine_status
@@ -41,7 +43,15 @@ from src.store import (
 
 SESSION_COOKIE = "session"
 
-app = FastAPI(title="学习助手", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    configure_logging()
+    bootstrap()
+    yield
+
+
+app = FastAPI(title="学习助手", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
