@@ -43,8 +43,12 @@ class ImageDraftTest(unittest.TestCase):
         self.previous_ocr = os.environ.get("LEARNING_ASSISTANT_TESSERACT")
         self.previous_provider = os.environ.get("LEARNING_ASSISTANT_OCR_PROVIDER")
         self.previous_font = os.environ.get("LEARNING_ASSISTANT_CJK_FONT")
+        self.previous_sync = os.environ.get("LEARNING_ASSISTANT_OCR_SYNC")
         os.environ["LEARNING_ASSISTANT_DB"] = str(Path(self.tmp.name) / "test.sqlite")
         os.environ["LEARNING_ASSISTANT_PRIVATE"] = str(Path(self.tmp.name) / "private")
+        # 这一组测的是识别和确认的语义，不是队列。同步模式让上传当场出结果，
+        # 队列本身由 tests/test_ocr_queue.py 覆盖。
+        os.environ["LEARNING_ASSISTANT_OCR_SYNC"] = "1"
         os.environ.pop("LEARNING_ASSISTANT_TESSERACT", None)
         os.environ.pop("LEARNING_ASSISTANT_OCR_PROVIDER", None)
         self.client = CsrfClient(TestClient(app))
@@ -59,6 +63,7 @@ class ImageDraftTest(unittest.TestCase):
         self._restore("LEARNING_ASSISTANT_TESSERACT", self.previous_ocr)
         self._restore("LEARNING_ASSISTANT_OCR_PROVIDER", self.previous_provider)
         self._restore("LEARNING_ASSISTANT_CJK_FONT", self.previous_font)
+        self._restore("LEARNING_ASSISTANT_OCR_SYNC", self.previous_sync)
         gc.collect()
         self.tmp.cleanup()
 
@@ -68,7 +73,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("../../合成海报.png", poster, "image/png")},
         )
-        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.status_code, 202, created.text)
         body = created.json()
         chosen = engine_status()
         self.assertTrue(chosen["available"], chosen["detail"])
@@ -173,7 +178,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("poster.png", _tiny_png(), "image/png")},
         )
-        self.assertEqual(poster.status_code, 201, poster.text)
+        self.assertEqual(poster.status_code, 202, poster.text)
         draft_id = poster.json()["id"]
         cancelled = self.client.post(f"/api/image-drafts/{draft_id}/cancel")
         self.assertEqual(cancelled.status_code, 200, cancelled.text)
@@ -199,7 +204,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("note.png", _tiny_png(), "image/png")},
         )
-        self.assertEqual(manual.status_code, 201, manual.text)
+        self.assertEqual(manual.status_code, 202, manual.text)
         self.assertEqual(manual.json()["mode"], "人工补录")
         self.assertEqual(manual.json()["ocr_text"], "")
         self.assertEqual(manual.json()["candidate"]["事项"], [])
@@ -239,7 +244,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("note2.png", _tiny_png(), "image/png")},
         )
-        self.assertEqual(checked.status_code, 201, checked.text)
+        self.assertEqual(checked.status_code, 202, checked.text)
         unfinished = {
             "事项": "作品提交截止",
             "标题": "手写日期",
@@ -274,7 +279,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("note3.png", _tiny_png(), "image/png")},
         )
-        self.assertEqual(another.status_code, 201, another.text)
+        self.assertEqual(another.status_code, 202, another.text)
         denied_day = self.client.post(
             f"/api/image-drafts/{another.json()['id']}/confirm",
             json={"items": [illegal]},
@@ -294,7 +299,7 @@ class ImageDraftTest(unittest.TestCase):
             "/api/image-drafts",
             files={"file": ("a.png", _tiny_png(), "image/png")},
         )
-        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.status_code, 202, created.text)
         draft_id = created.json()["id"]
         other = CsrfClient(TestClient(app))
         self.assertEqual(other.post("/api/register", json={"email": "other-auth@example.com", "password": "secret-pass-1"}).status_code, 201)
@@ -331,7 +336,7 @@ class ImageDraftTest(unittest.TestCase):
 
     def test_second_record_failure_rolls_back_everything(self) -> None:
         created = self.client.post("/api/image-drafts", files={"file": ("a.png", _tiny_png(), "image/png")})
-        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.status_code, 202, created.text)
         draft_id = created.json()["id"]
         calls = {"n": 0}
         real = confirm_draft.__globals__["_insert_record"]
@@ -362,7 +367,7 @@ class ImageDraftTest(unittest.TestCase):
 
     def test_concurrent_confirm_keeps_one_record(self) -> None:
         created = self.client.post("/api/image-drafts", files={"file": ("a.png", _tiny_png(), "image/png")})
-        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.status_code, 202, created.text)
         draft_id = created.json()["id"]
         user_id = _only_user_id()
         barrier = threading.Barrier(2)
@@ -403,7 +408,7 @@ class ImageDraftTest(unittest.TestCase):
         )
         self.assertEqual(saved.status_code, 200, saved.text)
         created = self.client.post("/api/image-drafts", files={"file": ("a.png", _tiny_png(), "image/png")})
-        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.status_code, 202, created.text)
         midway = self.client.get("/api/weekly-review").json()
         self.assertEqual(midway["done"], "手写完成")
         self.assertEqual(midway["activities"], [])

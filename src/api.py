@@ -31,9 +31,20 @@ from src.bitmap import MAX_BYTES
 from src.config import load_settings, resolve_today
 from src.courses import add_course, add_material, list_courses, list_materials, material_file
 from src.db import bootstrap
-from src.image_drafts import cancel_draft, confirm_draft, create_draft, draft_file, get_draft
+from src.image_drafts import (
+    DraftError,
+    cancel_draft,
+    confirm_draft,
+    draft_file,
+    enqueue_draft,
+    get_draft,
+    recover_interrupted,
+    retry_draft,
+    run_ocr,
+)
 from src.logging import configure_logging, log_request, new_request_id, request_id_var
-from src.ocr import engine_status
+from src import ocr_queue
+from src.ocr import engine_status_cached
 from src.prefs import get as get_reminder_prefs
 from src.prefs import update as update_reminder_prefs
 from src.ratelimit import (
@@ -80,7 +91,13 @@ class ApiError(HTTPException):
 async def lifespan(_app: FastAPI):
     configure_logging()
     bootstrap()
-    yield
+    # 队列必须在 bootstrap 之后启动：recover_interrupted() 要读表，表得先建好。
+    ocr_queue.start(run_ocr)
+    recover_interrupted()
+    try:
+        yield
+    finally:
+        ocr_queue.shutdown()
 
 
 app = FastAPI(title="学习助手", version="0.2.0", lifespan=lifespan)
@@ -616,20 +633,40 @@ def write_reminder_settings(body: ReminderPrefsBody, user: dict = Depends(curren
 
 @app.get("/api/ocr/status")
 def read_ocr_status(user: dict = Depends(current_user)) -> dict:
-    return engine_status()
+    return {**engine_status_cached(), "queue": ocr_queue.stats()}
 
 
-@app.post("/api/image-drafts", status_code=201)
-async def upload_image_draft(
+@app.post("/api/image-drafts", status_code=202)
+def upload_image_draft(
     file: UploadFile = File(...),
     user: dict = Depends(current_user),
 ) -> dict:
-    payload = await file.read(MAX_BYTES + 1)
-    await file.close()
+    """收下图片，排进队列，立刻返回 202。
+
+    这个路由刻意写成同步 `def`：FastAPI 会把它整个丢进线程池，
+    连读文件都不占事件循环。改成 `async def` 就得用 `await file.read()`，
+    那又会把上传本身挂回事件循环上。
+    """
+    payload = file.file.read(MAX_BYTES + 1)
+    file.file.close()
     try:
-        return create_draft(int(user["id"]), payload)
+        draft, reused = enqueue_draft(int(user["id"]), payload)
+    except DraftError as exc:
+        raise ApiError(exc.status, str(exc), exc.code) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {**draft, "reused": reused}
+
+
+@app.post("/api/image-drafts/{draft_id}/retry")
+def retry_image_draft(draft_id: int, user: dict = Depends(current_user)) -> dict:
+    try:
+        draft = retry_draft(int(user["id"]), draft_id)
+    except DraftError as exc:
+        raise ApiError(exc.status, str(exc), exc.code) from exc
+    if draft is None:
+        raise ApiError(404, "找不到这份识图草稿。", "draft_not_found")
+    return draft
 
 
 @app.get("/api/image-drafts/{draft_id}")
@@ -666,6 +703,8 @@ def confirm_image_draft(
 ) -> dict:
     try:
         saved = confirm_draft(int(user["id"]), draft_id, [item.model_dump() for item in body.items])
+    except DraftError as exc:
+        raise ApiError(exc.status, str(exc), exc.code) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if saved is None:
