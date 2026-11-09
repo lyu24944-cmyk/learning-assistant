@@ -13,6 +13,8 @@ export default defineConfig(({ mode }) => {
     server: {
       host: "127.0.0.1",
       port: 5173,
+      // 端口被占时直接报错，不要悄悄换到 5174：后端 Origin 白名单默认只认 5173。
+      strictPort: true,
       proxy: {
         "/api": apiTarget,
       },
