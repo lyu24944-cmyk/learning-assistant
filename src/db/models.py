@@ -154,6 +154,16 @@ class ImageDraft(Base):
     ocr_error: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     candidate_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    # 识别任务状态：queued / running / done / failed。和 status 是两件事：
+    # status 管草稿的生死，ocr_state 管识别跑到哪一步。
+    # 默认 'done' 只服务于「0003 的老行」和「回滚到批次 2」；新代码必须显式写 'queued'，
+    # 依赖默认值会让任务以已完成的姿态静静躺着，永远没人识别。
+    ocr_state: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'done'"))
+    ocr_queued_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    ocr_started_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    ocr_finished_at: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    ocr_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    ocr_provider: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
 
 
 class ImageLink(Base):

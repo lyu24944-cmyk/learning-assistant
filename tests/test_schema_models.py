@@ -15,7 +15,7 @@ from src.db import database_url, get_engine, init_db, reset_for_tests
 from src.db.migrations import current_revision
 from src.db.models import Base
 
-HEAD = "0003"
+HEAD = "0004"
 
 
 @pytest.fixture(autouse=True)

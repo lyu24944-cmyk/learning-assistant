@@ -48,7 +48,7 @@ def test_fresh_database_reaches_head(tmp_path: Path, monkeypatch: pytest.MonkeyP
     db = tmp_path / "fresh.sqlite"
     _use(db, monkeypatch)
     init_db()
-    assert current_revision(database_url()) == "0003"
+    assert current_revision(database_url()) == "0004"
     connection = sqlite3.connect(db)
     try:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -65,7 +65,7 @@ def test_legacy_fixture_is_adopted_without_losing_rows(tmp_path: Path, monkeypat
     _use(db, monkeypatch)
     init_db()
 
-    assert current_revision(database_url()) == "0003"
+    assert current_revision(database_url()) == "0004"
     assert list((tmp_path / "backups").glob("pre-migration-*.sqlite"))
     connection = sqlite3.connect(db)
     try:
@@ -99,7 +99,7 @@ def test_downgrade_drops_indexes_and_upgrade_restores_them(
         connection.close()
 
     upgrade_to_head(url)
-    assert current_revision(url) == "0003"
+    assert current_revision(url) == "0004"
     connection = sqlite3.connect(db)
     try:
         indexes = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
@@ -131,7 +131,7 @@ def test_0003_backfills_sessions_and_downgrades_cleanly(
         connection.close()
 
     upgrade_to_head(url)
-    assert current_revision(url) == "0003"
+    assert current_revision(url) == "0004"
     connection = sqlite3.connect(db)
     try:
         user = connection.execute(
@@ -159,5 +159,78 @@ def test_0003_backfills_sessions_and_downgrades_cleanly(
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert "rate_limits" not in tables
+    finally:
+        connection.close()
+
+
+def test_0004_marks_existing_drafts_done_and_downgrades_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "ocr.sqlite"
+    _use(db, monkeypatch)
+    url = database_url()
+    command.upgrade(alembic_config(url), "0003")
+
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute(
+            "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (1, "old@example.com", "synthetic-hash", "2026-11-01T00:00:00+00:00"),
+        )
+        connection.execute(
+            "INSERT INTO image_drafts ("
+            "id, user_id, status, storage_key, original_rel, preview_rel, mime, byte_size,"
+            " width, height, sha256, ocr_text, ocr_engine, candidate_json, created_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                1,
+                "pending",
+                "abc123",
+                "1/abc123/original.png",
+                "1/abc123/preview.jpg",
+                "image/png",
+                2048,
+                800,
+                1200,
+                "a" * 64,
+                "全国大学生数学建模竞赛",
+                "windows",
+                '{"方式": "识别草稿", "items": []}',
+                "2026-11-01T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    upgrade_to_head(url)
+    assert current_revision(url) == "0004"
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute(
+            "SELECT ocr_state, ocr_attempts, ocr_provider, ocr_queued_at, ocr_text "
+            "FROM image_drafts WHERE id = 1"
+        ).fetchone()
+        assert row[0] == "done"
+        assert row[1] == 0
+        assert row[2] == ""
+        assert row[3] == ""
+        assert row[4] == "全国大学生数学建模竞赛"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        connection.close()
+
+    downgrade(url, "0003")
+    connection = sqlite3.connect(db)
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(image_drafts)")}
+        assert "ocr_state" not in columns
+        assert "ocr_provider" not in columns
+        assert connection.execute("SELECT COUNT(*) FROM image_drafts").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT ocr_text FROM image_drafts WHERE id = 1").fetchone()[0]
+            == "全国大学生数学建模竞赛"
+        )
     finally:
         connection.close()
