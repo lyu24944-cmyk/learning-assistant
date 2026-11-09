@@ -27,12 +27,16 @@ logger = logging.getLogger("app.ocr")
 
 DEFAULT_QUEUE_SIZE = 20
 DEFAULT_WORKERS = 2
+DEFAULT_REAP_INTERVAL = 60.0
 
 _state_lock = threading.Lock()
 _queue: queue.Queue[int] | None = None
 _on_job: Callable[[int], None] | None = None
+_on_reap: Callable[[], int] | None = None
 _threads: list[threading.Thread] = []
 _started = False
+_reaper: threading.Thread | None = None
+_reap_stop = threading.Event()
 
 _running_lock = threading.Lock()
 _running = 0
@@ -58,14 +62,27 @@ def max_workers() -> int:
         return DEFAULT_WORKERS
 
 
-def start(on_job: Callable[[int], None]) -> None:
-    """启动队列。重复调用是安全的，第二次直接返回。"""
-    global _queue, _on_job, _threads, _started
+def reap_interval() -> float:
+    raw = os.environ.get("LEARNING_ASSISTANT_OCR_REAP_INTERVAL", "").strip()
+    try:
+        return max(1.0, float(raw)) if raw else DEFAULT_REAP_INTERVAL
+    except ValueError:
+        return DEFAULT_REAP_INTERVAL
+
+
+def start(on_job: Callable[[int], None], on_reap: Callable[[], int] | None = None) -> None:
+    """启动队列。重复调用是安全的，第二次直接返回。
+
+    `on_reap` 是可选的看门狗回调，由调用方注入（它要读数据库，这一层不碰）。
+    每 `reap_interval()` 秒调一次，用来回收卡在 `running` 太久的行。
+    """
+    global _queue, _on_job, _on_reap, _threads, _started, _reaper
     with _state_lock:
         if _started:
             return
         _queue = queue.Queue(maxsize=queue_size())
         _on_job = on_job
+        _on_reap = on_reap
         _started = True
         _threads = [
             threading.Thread(target=_loop, name=f"ocr-worker-{index}", daemon=True)
@@ -73,6 +90,10 @@ def start(on_job: Callable[[int], None]) -> None:
         ]
         for thread in _threads:
             thread.start()
+        if on_reap is not None:
+            _reap_stop.clear()
+            _reaper = threading.Thread(target=_reap_loop, name="ocr-reaper", daemon=True)
+            _reaper.start()
 
 
 def shutdown(wait: bool = False, timeout: float = 2.0) -> None:
@@ -81,16 +102,21 @@ def shutdown(wait: bool = False, timeout: float = 2.0) -> None:
     不打断正在跑的任务：Python 杀不掉线程，硬杀会留下写了一半的行。
     那些任务下次启动会被 `recover_interrupted()` 标成失败。
     """
-    global _started, _threads
+    global _started, _threads, _reaper
     with _state_lock:
-        if not _started and not _threads:
+        if not _started and not _threads and _reaper is None:
             return
         _started = False
         threads = list(_threads)
         _threads = []
+        reaper = _reaper
+        _reaper = None
+    _reap_stop.set()
     if wait:
         for thread in threads:
             thread.join(timeout=timeout)
+        if reaper is not None:
+            reaper.join(timeout=timeout)
 
 
 def submit(draft_id: int) -> bool:
@@ -136,13 +162,33 @@ def stats() -> dict:
 
 def reset() -> None:
     """测试用：停掉队列并清空全部状态。"""
-    global _queue, _on_job, _running
+    global _queue, _on_job, _on_reap, _running
     shutdown(wait=True, timeout=5.0)
     with _state_lock:
         _queue = None
         _on_job = None
+        _on_reap = None
     with _running_lock:
         _running = 0
+
+
+def reap_once() -> int:
+    """跑一次看门狗，返回回收了几条。测试和运维手动触发用。"""
+    with _state_lock:
+        callback = _on_reap
+    if callback is None:
+        return 0
+    try:
+        return int(callback())
+    except Exception:
+        logger.exception("ocr.reap_crashed", extra={"event": "ocr_reap_crashed"})
+        return 0
+
+
+def _reap_loop() -> None:
+    interval = reap_interval()
+    while not _reap_stop.wait(interval):
+        reap_once()
 
 
 def _loop() -> None:

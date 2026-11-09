@@ -26,6 +26,8 @@ python3 -m src.reminder --today 2026-11-08
 
 上传只收能解码的 PNG、JPEG、GIF、WEBP、BMP，单张不超过 8MB。原图按账号分开存在 `data/private/`，不进 git，也不走公共静态目录。识别出的名称、报名截止、作品提交截止、日期原句、报名条件、主办方和链接都只是草稿，字段可以改。没有年份、相对日期或几种日期对不上时写成「未找到」，不会补今年。图里没有官网就是「未找到」，原图本身留作来源证据。只有你把某条改成「已核对」并且截止日期是公历 `YYYY-MM-DD`，它才会进入提醒。确认前不写入我的记录，上传也不会变成已报名或已提交。确认后原图进入资料夹，并和私人记录互相能找到；本周复盘仍保留你手写的完成、卡住和下周计划，只额外记下「识图新增 / 整理了资料」或「人工补录，不是识别结果」。
 
+上传不再等识别做完。`POST /api/image-drafts` 收下原图、写一行 `queued` 就返回 **202**，识别在后台两个工人线程里跑，前端每 800 毫秒问一次 `GET /api/image-drafts/{id}`，间隔由响应里的 `poll_after_ms` 给。所以传图的时候时间线、提醒、其它页面都还能用。同一张图（`user_id` 加 `sha256` 相同）第二次上传直接复用上一次的结果，`reused` 为 `true`，不会再起一次识别进程。识别失败可以点「重新识别」，最多 3 次；也可以在失败后人工补录。草稿还在排队或识别中时，确认接口返回 409 `ocr_not_ready`，不会把没识别完的东西写进记录。服务重启时，卡在 `running` 超过 5 分钟的任务标成失败并写明「服务重启，识别中断」，还在排队的重新入队；排不下的也标失败，不静默丢。队列在进程内存里，重启会丢任务——这是当前接受的缺口，多进程部署前必须换掉，见 [docs/ocr.md](docs/ocr.md)。
+
 网页骨架读同一份 CSV。一个终端启动 API，另一个终端启动页面：
 
 ```bash
@@ -99,6 +101,13 @@ python3 -m src.reminder --records templates/records.example.csv --today 2026-11-
 - `LEARNING_ASSISTANT_CSRF=0`：只关闭 CSRF token 校验，Origin 校验仍开。给旧前端留一个版本的退路，确认前端都更新后删掉。
 - `LEARNING_ASSISTANT_ALLOWED_ORIGINS`：逗号分隔的额外 Origin，例如 `https://app.example.com`。同源请求不用写；反向代理没开 `--proxy-headers` 时用它兜底。
 - `LEARNING_ASSISTANT_RATE_LIMIT=0`：关掉全部频率限制，方便压测或演示。默认是每个 IP 每小时 30 次注册、同一 IP 加同一邮箱 15 分钟内 10 次登录失败、单 IP 15 分钟 60 次登录失败、单 IP 每小时 10 次重置、单用户 15 分钟 5 次改密码失败。计数在 `rate_limits` 表里，重启还在，多进程共享；阈值用对应的 `LEARNING_ASSISTANT_*_LIMIT` 改。
+- `LEARNING_ASSISTANT_OCR_QUEUE_SIZE`：识图等待队列长度，默认 20。满了上传直接返回 503，让用户稍后再试，而不是把内存堆满。
+- `LEARNING_ASSISTANT_OCR_WORKERS`：识别工人线程数，默认 2。每个工人会起一个 PowerShell（Windows）或 tesseract 进程；调大之前先看内存和 SQLite 写锁。
+- `LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT`：单用户同时排队或识别中的草稿数，默认 2。超了返回 429 `draft_busy`。这道闸比队列上限更重要——只靠队列，一个人狂点就能吃掉全部 20 个位。
+- `LEARNING_ASSISTANT_UPLOAD_LIMIT`：单用户每小时上传次数，默认 20，计数在 `rate_limits` 表里。防脚本刷。
+- `LEARNING_ASSISTANT_OCR_REAP_INTERVAL`：看门狗扫描间隔，默认 60 秒。它把卡在「识别中」超过 180 秒的任务标成失败，避免一个卡住的任务永久占着工人。
+- `LEARNING_ASSISTANT_OCR_STATUS_TTL`：引擎状态缓存秒数，默认 300。设 `0` 关掉缓存，调试「装了语言包但页面还说不可用」时用。
+- `LEARNING_ASSISTANT_OCR_SYNC=1`：退回「请求里当场识别完再回话」的老行为。给测试和回滚用；开着的时候队列不参与，行为与批次 2 一致。
 - 账号相关的运维命令：`python -m src.accounts reset-password <email>` 生成 30 分钟一次性链接；`mark-verified <email>` 标记邮箱已验证；`sessions <email>` 列出会话。细节和威胁模型见 [docs/auth.md](docs/auth.md)。
 - 数据库连接设了 5 秒 busy_timeout；建表和迁移只在每个进程启动时跑一次（`src.db.init_db`），连接不再执行 DDL。SQLite 仍是单文件单写者，只允许 1 个写进程；要 2 个写进程时，改 `DATABASE_URL` 换 Postgres。
 - 迁移和备份：`python -m alembic upgrade head` 升级；老库第一次启动会自动备份到 `data/backups/pre-migration-*.sqlite` 再接管。日常备份用 `python scripts/backup_db.py`，默认保留 7 份并跑 `integrity_check`。

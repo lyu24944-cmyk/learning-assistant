@@ -20,6 +20,7 @@ LOGIN_FAILURE_WINDOW = 15 * 60
 REGISTER_WINDOW = 60 * 60
 RESET_WINDOW = 60 * 60
 CHANGE_WINDOW = 15 * 60
+UPLOAD_WINDOW = 60 * 60
 _CLEANUP_SECONDS = 60
 _RETENTION_SECONDS = 24 * 60 * 60
 
@@ -48,6 +49,7 @@ LOGIN_IP_LIMIT = _positive_int("LEARNING_ASSISTANT_LOGIN_IP_LIMIT", 60)
 REGISTER_LIMIT = _positive_int("LEARNING_ASSISTANT_REGISTER_LIMIT", 30)
 RESET_LIMIT = _positive_int("LEARNING_ASSISTANT_RESET_LIMIT", 10)
 CHANGE_PASSWORD_LIMIT = _positive_int("LEARNING_ASSISTANT_CHANGE_PASSWORD_LIMIT", 5)
+UPLOAD_LIMIT = _positive_int("LEARNING_ASSISTANT_UPLOAD_LIMIT", 20)
 
 
 def _key_text(key: Hashable) -> str:
@@ -181,6 +183,15 @@ def change_password_blocked(user_id: int) -> bool:
 
 def note_change_password_failure(user_id: int) -> None:
     _hit(f"change:{user_id}", CHANGE_WINDOW)
+
+
+def upload_blocked(user_id: int) -> bool:
+    """识图上传的第三道闸：一个人一小时内最多传 20 次。防脚本刷，不防正常使用。"""
+    return not _check(f"upload:{user_id}", UPLOAD_LIMIT, UPLOAD_WINDOW)
+
+
+def note_upload(user_id: int) -> None:
+    _hit(f"upload:{user_id}", UPLOAD_WINDOW)
 
 
 def cleanup(now: float | None = None) -> int:

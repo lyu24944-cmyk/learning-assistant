@@ -271,7 +271,7 @@ POST /api/image-drafts   (multipart/form-data, file=...)
   "languages": [],
   "ocr_error": "",
   "ocr_text": "",
-  "candidate": {"方式": "识别草稿", "items": []},
+  "candidate": {"方式": "识别草稿", "事项": []},
   "width": 1080,
   "height": 1440,
   "preview_url": "/api/image-drafts/42/preview",
@@ -300,7 +300,7 @@ GET /api/image-drafts/42
   "ocr_attempts": 1,
   "queue_position": 0,
   "ocr_error": "",
-  "candidate": {"方式": "识别草稿", "items": []},
+  "candidate": {"方式": "识别草稿", "事项": []},
   "poll_after_ms": 1000,
   "...": "..."
 }
@@ -321,7 +321,7 @@ GET /api/image-drafts/42
   "id": 42,
   "ocr_state": "done",
   "ocr_text": "全国大学生数学建模竞赛\n报名截止：2026年11月25日\n...",
-  "candidate": {"方式": "识别草稿", "items": [{"标题": "全国大学生数学建模竞赛", "截止日期": "2026-11-25", "...": "..."}]},
+  "candidate": {"方式": "识别草稿", "事项": [{"标题": "全国大学生数学建模竞赛", "截止日期": "2026-11-25", "...": "..."}]},
   "poll_after_ms": 0
 }
 ```
@@ -334,7 +334,7 @@ GET /api/image-drafts/42
   "id": 42,
   "ocr_state": "failed",
   "ocr_error": "识别超时，没有得到竞赛信息。",
-  "candidate": {"方式": "人工补录", "items": []},
+  "candidate": {"方式": "人工补录", "事项": []},
   "poll_after_ms": 0
 }
 ```
@@ -470,7 +470,7 @@ def run_ocr(draft_id: int) -> None:
 
    命中 `done` → 直接返回结果；命中 `queued` / `running` → 返回那条在途草稿（`reused: true`）。两种都**不写文件、不插行、不入队**。
 5. `write_private(...)` — 落盘原图和预览。
-6. `INSERT ... ocr_state='queued', candidate_json='{"方式":"识别草稿","items":[]}'`。
+6. `INSERT ... ocr_state='queued', candidate_json='{"方式":"识别草稿","事项":[]}'`。
 7. `submit(draft_id)`。返回 `False` 说明队列满——这时要**回滚**：删掉刚插的行和刚写的文件，抛 `QueueFull`。不能留一条永远 `queued` 的孤儿行。
 8. 返回 `(草稿, False)`。
 
@@ -484,7 +484,7 @@ def run_ocr(draft_id: int) -> None:
 4. `status = engine_status_cached()`；`transcribe(image, status)`；`parse_poster(text)`。
 5. 再读一次行，如果 `status = 'cancelled'`，丢弃结果不写。
 6. `UPDATE ocr_text, candidate_json, ocr_provider, ocr_state='done', ocr_finished_at`。
-7. 任何异常 → `UPDATE ocr_state='failed', ocr_error=..., ocr_finished_at`，`candidate_json` 改成 `{"方式":"人工补录","items":[]}`（与现有失败语义一致）。
+7. 任何异常 → `UPDATE ocr_state='failed', ocr_error=..., ocr_finished_at`，`candidate_json` 改成 `{"方式":"人工补录","事项":[]}`（与现有失败语义一致）。
 
 两个必须注意的点：
 
@@ -494,9 +494,12 @@ def run_ocr(draft_id: int) -> None:
 `confirm_draft()` 加守卫，插在状态检查之后：
 
 ```python
-if row["ocr_state"] != "done":
-    raise ValueError("识别还没结束，请等结果出来再确认。")
+if row["ocr_state"] in {"queued", "running"}:
+    raise DraftError("识别还没结束，请等结果出来再确认。", "ocr_not_ready", 409)
 ```
+
+只拦这两个状态。`failed` 必须放行——那正是人工补录的入口。写成 `!= "done"` 会把
+「识别失败后手动填」这条路堵死，和第 1.4 节的表格、第 7.2 节的界面设计自相矛盾。
 
 **这一行不是防御性编程，是修 bug。** 现有第 149 行：
 
@@ -927,3 +930,58 @@ reaper 和 `queue_position` 可以砍，但要知道代价：前者砍了就是�
 | 软取消 | 不真的打断任务，只是它的结果不要了 |
 | 迁移 | 给数据库结构记一笔账；空库和老库按同一本账升级 |
 | Alembic | 记这笔账、并按账升级的工具 |
+
+---
+
+## 16. 执行记录（2026-11-09）
+
+按第 8 节九步做完，tag `batch-3`。全量 147 项测试通过（基线 116，新增 31），前端构建通过。
+
+### 16.1 落地清单
+
+| 项 | 状态 | 位置 |
+| --- | --- | --- |
+| 迁移 `0004` 六列 | 完成 | `migrations/versions/0004_ocr_queue.py` |
+| 有界队列 + 2 工人 + daemon 线程 | 完成 | `src/ocr_queue.py` |
+| 看门狗 reaper（60 秒 / 180 秒） | 完成 | `ocr_queue.start(on_job, on_reap)` + `image_drafts.reap_stale()` |
+| 三道闸 | 完成 | `image_drafts.enqueue_draft()` |
+| 在途复用（`queued`/`running`） | 完成 | `image_drafts._find_reusable()` |
+| `queue_position` | 完成 | `image_drafts.queue_position()`，路由层拼 |
+| `enqueue_draft` + `run_ocr` 拆分 | 完成 | `src/image_drafts.py` |
+| `confirm` 守卫 | 完成 | `confirm_draft()`，只拦 `queued`/`running` |
+| 上传 202 + 同步 `def` | 完成 | `src/api.py` |
+| 前端轮询 + 状态 + 重试 + 上传中禁用 | 完成 | `frontend/src/App.jsx` |
+| 引擎状态缓存 300 秒 | 完成 | `src/ocr.py` |
+| 同步开关 | 完成 | `LEARNING_ASSISTANT_OCR_SYNC` |
+| 日志五个字段 + `ocr_reaped` | 完成 | `src/logging.py` |
+| 粘贴截图（7.5） | **未做** | 第 14 节标的是「可选，待拍板 D」，没有拍板就不做 |
+
+### 16.2 与计划不一致的三处
+
+1. **`ocr_queue.position()` 放到了 `image_drafts.queue_position()`。** `ocr_queue` 这一层的约定是
+   「不碰数据库」，位置要查库，放进去就破了这个约定。接口形状和语义没变。
+2. **`recover_interrupted()` 也在 `image_drafts`，不在 `ocr_queue.recover()`。** 同上：它要读表。
+   `ocr_queue` 只提供 `requeue(ids)`。
+3. **新增 `LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT` 环境变量。** 第 9.3 节第 15 条要求
+   「`maxsize=1` + 放宽单用户上限」，上限写死就没法测那条分支。默认仍是 2。
+
+### 16.3 实施中补的两个洞
+
+- **取消后的状态收尾。** `_finish_done` / `_finish_failed` 都带 `WHERE status = 'pending'`，
+  用户在识别途中取消后，那行会永远停在 `running`，一直占着「在途」名额，还会被下一次
+  启动的 `recover_interrupted()` 误标失败。补了 `_finish_cancelled()`：不写识别结果，
+  只把 `ocr_state` 收到 `done`。
+- **失败候选的 `方式`。** `empty_candidate()` 原来固定写「识别草稿」，导致失败草稿在前端
+  显示成一份正常结果。改成带参数，失败时写「人工补录」。
+
+### 16.4 实测（真实 lifespan、真实本机 Windows OCR、合成海报）
+
+| 指标 | 结果 |
+| --- | --- |
+| 上传响应 | 202，83ms |
+| 识别完成 | done，721ms，2 条候选事项 |
+| 上传期间 `/api/timeline` | 62 次请求，中位 11ms，最大 32ms，0 错误 |
+| 同一张图再传 | `reused: true`，`poll_after_ms: 0` |
+| 写入记录 | 0 条（确认前不写） |
+
+改动前同一场景里，那 62 次时间线请求会排在识别后面。

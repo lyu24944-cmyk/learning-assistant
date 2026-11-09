@@ -29,6 +29,11 @@ _EXTRA_FIELDS = (
     "client_ip_hash",
     "email_masked",
     "error_code",
+    "draft_id",
+    "ocr_state",
+    "queue_depth",
+    "queue_wait_ms",
+    "ocr_ms",
 )
 _configured = False
 

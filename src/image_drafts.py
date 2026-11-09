@@ -26,6 +26,7 @@ from src.db.sqlite_adapter import rollback_quiet
 from src.ocr import OcrFailed, OcrUnavailable, engine_status_cached, transcribe
 from src.poster import parse_poster
 from src.records import validate_records
+from src.ratelimit import note_upload, upload_blocked
 from src.review import current_week_key
 from src.schema import DRAFT, NOT_FOUND, RECORD_FIELDS, REMIND_NO, REMIND_YES, VERIFIED
 from src.store import _COLUMNS, _to_storage
@@ -35,12 +36,14 @@ logger = logging.getLogger("app.ocr")
 _MODES = {"识别草稿", "人工补录"}
 
 MAX_ATTEMPTS = 3
-UNFINISHED_LIMIT = 3
-RUNNING_TIMEOUT_SECONDS = 300
+UNFINISHED_LIMIT = 2
+UNFINISHED_ENV = "LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT"
+RUNNING_TIMEOUT_SECONDS = 180
 POLL_AFTER_QUEUED = 800
 POLL_AFTER_RUNNING = 1000
 POLL_AFTER_BUSY = 2000
 BUSY_DEPTH = 15
+SECONDS_PER_TASK = 3
 
 _INSERT = """
 INSERT INTO image_drafts (
@@ -70,6 +73,19 @@ def sync_mode() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def unfinished_limit() -> int:
+    """单用户同时排队的草稿数上限。默认 2。
+
+    可调是为了测试「队列满回滚」那条分支：不放开它，第 3 张会先被这道闸拦成 429，
+    根本走不到 `submit()` 返回 False 的地方。
+    """
+    raw = os.environ.get(UNFINISHED_ENV, "").strip()
+    try:
+        return max(1, int(raw)) if raw else UNFINISHED_LIMIT
+    except ValueError:
+        return UNFINISHED_LIMIT
+
+
 def empty_candidate(mode: str = "识别草稿") -> dict:
     """合法但空白的候选。
 
@@ -85,17 +101,24 @@ def empty_candidate(mode: str = "识别草稿") -> dict:
 
 
 def enqueue_draft(user_id: int, data: bytes) -> tuple[dict, bool]:
-    """收下图片并排进队列。返回 (草稿视图, 是否复用了已有结果)。"""
+    """收下图片并排进队列。返回 (草稿视图, 是否复用了已有结果)。
+
+    三道闸的顺序是刻意的：单人在途 → 单人频率 → 全局队列。
+    队列上限放最后，否则一个人狂点就能吃掉全部 20 个位，别人全被 503。
+    闸和查重都在写文件之前——被拒的请求不该在磁盘上留下任何字节。
+    """
     image, extension, mime, digest = inspect_bitmap(data)
     width, height = image.size
 
-    reused = _find_done(user_id, digest)
+    if _unfinished_count(user_id) >= unfinished_limit():
+        raise DraftError("上一张还在识别，等它出来再传下一张。", "draft_busy", 429)
+    if upload_blocked(user_id):
+        raise DraftError("今天传得有点多，歇一会儿再试。", "upload_rate_limited", 429)
+
+    reused = _find_reusable(user_id, digest)
     if reused is not None:
         logger.info("ocr.reused", extra={"event": "ocr_reused", "draft_id": int(reused["id"])})
         return _public(user_id, int(reused["id"])), True
-
-    if _unfinished_count(user_id) >= UNFINISHED_LIMIT:
-        raise DraftError("还有几份图正在识别，等它们出来再传新图。", "draft_busy", 429)
 
     storage_key = allocate_key()
     original_rel, preview_rel = write_private(
@@ -119,6 +142,7 @@ def enqueue_draft(user_id: int, data: bytes) -> tuple[dict, bool]:
     except Exception:
         _remove_quiet(original_rel, preview_rel)
         raise
+    note_upload(user_id)
 
     if sync_mode():
         run_ocr(draft_id)
@@ -132,7 +156,7 @@ def enqueue_draft(user_id: int, data: bytes) -> tuple[dict, bool]:
 
     if not ocr_queue.submit(draft_id):
         _discard_draft(user_id, draft_id)
-        raise DraftError("识别任务排队已满，请稍后再试。", "ocr_queue_full", 503)
+        raise DraftError("前面还有人在识别，约 30 秒后再试。", "ocr_queue_full", 503)
 
     logger.info(
         "ocr.enqueued",
@@ -246,7 +270,9 @@ def recover_interrupted(now: dt.datetime | None = None) -> dict:
             (stale_before,),
         ).fetchall()
         for row in stale:
-            if _fail_running(connection, int(row["id"]), moment.isoformat()):
+            if _fail_running(
+                connection, int(row["id"]), moment.isoformat(), "服务重启，识别中断，请重试。"
+            ):
                 failed += 1
         queued = [
             int(row["id"])
@@ -558,14 +584,78 @@ def _row(draft_id: int):
         connection.close()
 
 
-def _find_done(user_id: int, digest: str):
+def _find_reusable(user_id: int, digest: str):
+    """同一张图已经有结果或正在跑，就复用那条，不再识别一次。
+
+    命中 `done` 返回现成结果；命中 `queued` / `running` 返回那条在途草稿——
+    连点两下、或者两个标签页同时传同一张，只会识别一次。
+    """
     connection = connect()
     try:
         return connection.execute(
             "SELECT id FROM image_drafts WHERE user_id = ? AND sha256 = ? "
-            "AND ocr_state = 'done' AND status != 'cancelled' ORDER BY id DESC LIMIT 1",
+            "AND status = 'pending' AND ocr_state IN ('done', 'queued', 'running') "
+            "ORDER BY id DESC LIMIT 1",
             (user_id, digest),
         ).fetchone()
+    finally:
+        connection.close()
+
+
+def queue_position(draft_id: int) -> int:
+    """前面还有几个任务在排队。0 表示不在排队（正在识别或已结束）。
+
+    口径是「前面还有几个」，走主键计数，不维护内存位置表——
+    内存里的顺序和库里的顺序会不一致，反而难对账。
+    """
+    connection = connect()
+    try:
+        row = connection.execute(
+            "SELECT ocr_state FROM image_drafts WHERE id = ?", (draft_id,)
+        ).fetchone()
+        if row is None or row["ocr_state"] != "queued":
+            return 0
+        return int(
+            connection.execute(
+                "SELECT COUNT(*) FROM image_drafts WHERE ocr_state = 'queued' AND id < ?",
+                (draft_id,),
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+
+
+def reap_stale(now: dt.datetime | None = None) -> int:
+    """看门狗：把卡在 `running` 超过 180 秒的行标失败。
+
+    正常情况永远不该有活干——`subprocess.run(timeout=30)` 已经给了单个任务上界。
+    它防的是异常：PowerShell 卡在 kill 不掉的状态，或者工人线程被某个没预料到的
+    阻塞调用占住。没有它，一条 `running` 行会一直占着两个工人之一，
+    而且只在进程重启时才被 `recover_interrupted()` 收拾。
+    """
+    moment = now or dt.datetime.now(dt.UTC)
+    cutoff = (moment - dt.timedelta(seconds=RUNNING_TIMEOUT_SECONDS)).isoformat()
+    connection = connect()
+    try:
+        rows = connection.execute(
+            "SELECT id, ocr_started_at FROM image_drafts WHERE ocr_state = 'running' "
+            "AND (ocr_started_at = '' OR ocr_started_at < ?)",
+            (cutoff,),
+        ).fetchall()
+        reaped = 0
+        for row in rows:
+            if _fail_running(connection, int(row["id"]), moment.isoformat(), "识别超时，请重试。"):
+                reaped += 1
+                logger.warning(
+                    "ocr.reaped",
+                    extra={
+                        "event": "ocr_reaped",
+                        "draft_id": int(row["id"]),
+                        "ocr_ms": _elapsed_ms(row["ocr_started_at"], moment.isoformat()),
+                    },
+                )
+        connection.commit()
+        return reaped
     finally:
         connection.close()
 
@@ -705,11 +795,11 @@ def _requeue_existing(draft_id: int) -> None:
         connection.close()
 
 
-def _fail_running(connection, draft_id: int, finished_at: str) -> bool:
+def _fail_running(connection, draft_id: int, finished_at: str, message: str) -> bool:
     cursor = connection.execute(
         "UPDATE image_drafts SET ocr_state = 'failed', ocr_error = ?, ocr_finished_at = ? "
         "WHERE id = ? AND ocr_state = 'running'",
-        ("服务重启，识别中断，请重试。", finished_at, draft_id),
+        (message, finished_at, draft_id),
     )
     return cursor.rowcount > 0
 

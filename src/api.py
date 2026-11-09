@@ -38,6 +38,8 @@ from src.image_drafts import (
     draft_file,
     enqueue_draft,
     get_draft,
+    queue_position,
+    reap_stale,
     recover_interrupted,
     retry_draft,
     run_ocr,
@@ -92,7 +94,8 @@ async def lifespan(_app: FastAPI):
     configure_logging()
     bootstrap()
     # 队列必须在 bootstrap 之后启动：recover_interrupted() 要读表，表得先建好。
-    ocr_queue.start(run_ocr)
+    # 第二个参数是看门狗：每 60 秒回收卡在 running 太久的行。
+    ocr_queue.start(run_ocr, reap_stale)
     recover_interrupted()
     try:
         yield
@@ -655,7 +658,7 @@ def upload_image_draft(
         raise ApiError(exc.status, str(exc), exc.code) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {**draft, "reused": reused}
+    return {**draft, "reused": reused, "queue_position": queue_position(int(draft["id"]))}
 
 
 @app.post("/api/image-drafts/{draft_id}/retry")
@@ -674,7 +677,8 @@ def read_image_draft(draft_id: int, user: dict = Depends(current_user)) -> dict:
     draft = get_draft(int(user["id"]), draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="找不到这份识图草稿。")
-    return draft
+    # queue_position 属于队列，不属于草稿，所以在这里拼，不塞进 _public()。
+    return {**draft, "queue_position": queue_position(draft_id)}
 
 
 @app.get("/api/image-drafts/{draft_id}/preview")

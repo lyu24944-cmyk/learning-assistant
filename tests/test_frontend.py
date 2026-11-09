@@ -45,6 +45,27 @@ class FrontendSourceTest(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere", css)
         self.assertIn(".card-row a", css)
 
+    def test_recognize_page_polls_instead_of_blocking(self) -> None:
+        app = APP.read_text(encoding="utf-8")
+        self.assertIn("ocr_state", app)
+        self.assertIn("poll_after_ms", app)
+        # 递归 setTimeout 而不是 setInterval：请求比间隔慢时不会堆积。
+        self.assertIn("setTimeout(tick", app)
+        self.assertNotIn("setInterval(tick", app)
+        self.assertIn("revokeObjectURL", app)
+        self.assertIn("重新识别", app)
+        self.assertIn("识别中，稍等", app)
+        self.assertIn("已等 ${elapsed} 秒", app)
+        self.assertIn("queue_position", app)
+        self.assertIn("前面还有", app)
+        # 防双击：请求还没回来时输入框禁用，onFile 开头再兜一句。
+        self.assertIn("disabled={uploading}", app)
+        self.assertIn("if (!file || uploading)", app)
+        # 准入被拒的三种文案分开，不能一个「失败了」打天下。
+        self.assertIn("draft_busy", app)
+        self.assertIn("upload_rate_limited", app)
+        self.assertIn("ocr_queue_full", app)
+
     def test_frontend_production_build(self) -> None:
         npm = _npm_command()
         install = run_text([*npm, "install"], cwd=ROOT / "frontend")

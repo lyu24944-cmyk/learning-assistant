@@ -36,6 +36,7 @@ npm run dev
 
 - 本地要同时开 API 和前端两个进程。只跑其中一个，页面会提示读不到时间线。
 - SQLite 仍然只允许一个写进程。`busy_timeout` 让并发写排队，但开第二个写进程仍可能锁库。2026-11-09 实测 WAL 在 Windows 上不稳定（4 写 4 读 × 3 轮，每轮都有 `attempt to write a readonly database`），所以默认保持 DELETE，不靠 WAL 解决多进程。
+- 识图队列在进程内存里（`src/ocr_queue.py`）。重启会丢排队中的任务，只能标成失败让人重试，做不到「绝不丢」。出现以下任一情况就必须换成 RQ/Arq 之类的真队列，不要再打补丁：部署成多进程（`--workers N` 或 gunicorn）；迁到 Postgres 并准备横向扩容；出现「任务丢了但用户不知道」的真实事故。`image_drafts.ocr_state` 这套字段描述业务状态，换队列时可以原样保留。
 - 旧模块仍用 `sqlite3` 原生 SQL，新模块用 `session()`。换 Postgres 时，旧模块要先被改到、换成 SQLAlchemy 查询；`tests/test_dialect.py` 保证不会静默长出方言 SQL。
 - Vite 不做服务端渲染。第一次打开要等接口返回，不适合靠搜索引擎获客。这个产品不靠那个。
 - 手贴页面还没做。写入口 `POST /api/records` 已经要求登录，并且只写入当前用户的行。共享目录仍然只能改 CSV，不能从网页改。

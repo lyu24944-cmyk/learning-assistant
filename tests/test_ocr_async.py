@@ -59,9 +59,11 @@ INSERT INTO image_drafts (
 """
 
 
-def _png() -> bytes:
+def _png(seed: int = 0) -> bytes:
+    """每次给不同的像素，sha256 才不同——否则会被「在途复用」直接命中。"""
+    colour = (seed % 256, (seed * 7) % 256, (seed * 13) % 256)
     buffer = io.BytesIO()
-    Image.new("RGB", (32, 32), "white").save(buffer, format="PNG")
+    Image.new("RGB", (32, 32), colour).save(buffer, format="PNG")
     return buffer.getvalue()
 
 
@@ -76,6 +78,8 @@ class AsyncDraftTest(unittest.TestCase):
                 "LEARNING_ASSISTANT_OCR_SYNC",
                 "LEARNING_ASSISTANT_OCR_QUEUE_SIZE",
                 "LEARNING_ASSISTANT_OCR_WORKERS",
+                "LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT",
+                "LEARNING_ASSISTANT_OCR_REAP_INTERVAL",
             )
         }
         os.environ["LEARNING_ASSISTANT_DB"] = str(Path(self.tmp.name) / "test.sqlite")
@@ -83,8 +87,12 @@ class AsyncDraftTest(unittest.TestCase):
         os.environ.pop("LEARNING_ASSISTANT_OCR_SYNC", None)
         os.environ.pop("LEARNING_ASSISTANT_OCR_QUEUE_SIZE", None)
         os.environ.pop("LEARNING_ASSISTANT_OCR_WORKERS", None)
+        os.environ.pop("LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT", None)
+        # 看门狗在测试里手动触发；后台线程别插进来，否则 reap 计数不确定。
+        os.environ["LEARNING_ASSISTANT_OCR_REAP_INTERVAL"] = "3600"
         ocr_queue.reset()
-        ocr_queue.start(image_drafts.run_ocr)
+        ocr_queue.start(image_drafts.run_ocr, image_drafts.reap_stale)
+        self._seq = 0
         self.client = CsrfClient(TestClient(app))
         self.client.post(
             "/api/register", json={"email": "async@example.com", "password": "secret-pass-1"}
@@ -103,9 +111,12 @@ class AsyncDraftTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _upload(self, payload: bytes | None = None):
+        if payload is None:
+            payload = _png(self._seq)
+            self._seq += 1
         return self.client.post(
             "/api/image-drafts",
-            files={"file": ("poster.png", payload or _png(), "image/png")},
+            files={"file": ("poster.png", payload, "image/png")},
         )
 
     def _wait(self, draft_id: int, state: str, timeout: float = 5.0) -> dict:
@@ -292,8 +303,10 @@ class AsyncDraftTest(unittest.TestCase):
     def test_full_queue_returns_503_without_leaving_an_orphan_row(self) -> None:
         os.environ["LEARNING_ASSISTANT_OCR_QUEUE_SIZE"] = "1"
         os.environ["LEARNING_ASSISTANT_OCR_WORKERS"] = "1"
+        # 放开单人在途上限，否则第 3 张先被那道闸拦成 429，走不到队列满的分支。
+        os.environ["LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT"] = "10"
         ocr_queue.reset()
-        ocr_queue.start(image_drafts.run_ocr)
+        ocr_queue.start(image_drafts.run_ocr, image_drafts.reap_stale)
         started = threading.Event()
         release = threading.Event()
 
@@ -317,6 +330,100 @@ class AsyncDraftTest(unittest.TestCase):
             release.set()
 
         self.assertEqual(self._draft_rows(), 2)
+
+    def test_third_unfinished_upload_is_refused(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_transcribe(_image, _status=None) -> str:
+            started.set()
+            release.wait(5.0)
+            return TEXT
+
+        with (
+            patch.object(image_drafts, "engine_status_cached", return_value=STATUS),
+            patch.object(image_drafts, "transcribe", side_effect=slow_transcribe),
+        ):
+            first = self._upload()
+            self.assertEqual(first.status_code, 202, first.text)
+            self.assertTrue(started.wait(3.0))
+            second = self._upload()
+            self.assertEqual(second.status_code, 202, second.text)
+            third = self._upload()
+            self.assertEqual(third.status_code, 429, third.text)
+            self.assertEqual(third.json()["code"], "draft_busy")
+            release.set()
+
+        self.assertEqual(self._draft_rows(), 2)
+
+    def test_upload_rate_limit_refuses_after_the_quota(self) -> None:
+        from src import ratelimit
+
+        with patch.object(ratelimit, "UPLOAD_LIMIT", 2):
+            with (
+                patch.object(image_drafts, "engine_status_cached", return_value=STATUS),
+                patch.object(image_drafts, "transcribe", return_value=TEXT),
+            ):
+                for _ in range(2):
+                    created = self._upload()
+                    self.assertEqual(created.status_code, 202, created.text)
+                    self._wait(created.json()["id"], "done")
+                denied = self._upload()
+        self.assertEqual(denied.status_code, 429, denied.text)
+        self.assertEqual(denied.json()["code"], "upload_rate_limited")
+
+    def test_reaper_marks_a_stuck_running_row_failed(self) -> None:
+        long_ago = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
+        stuck = self._insert_draft("running", started_at=long_ago, sha256="d" * 64)
+        self.assertEqual(ocr_queue.reap_once(), 1)
+        connection = connect()
+        try:
+            row = connection.execute(
+                "SELECT ocr_state, ocr_error FROM image_drafts WHERE id = ?", (stuck,)
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(row["ocr_state"], "failed")
+        self.assertIn("超时", row["ocr_error"])
+
+    def test_queue_position_counts_the_tasks_ahead(self) -> None:
+        first = self._insert_draft("queued", sha256="1" * 64)
+        second = self._insert_draft("queued", sha256="2" * 64)
+        third = self._insert_draft("queued", sha256="3" * 64)
+        self.assertEqual(image_drafts.queue_position(first), 0)
+        self.assertEqual(image_drafts.queue_position(second), 1)
+        self.assertEqual(image_drafts.queue_position(third), 2)
+
+        running = self._insert_draft("running", sha256="4" * 64)
+        self.assertEqual(image_drafts.queue_position(running), 0)
+
+    def test_in_flight_image_is_reused_instead_of_queued_twice(self) -> None:
+        payload = _png()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_transcribe(_image, _status=None) -> str:
+            started.set()
+            release.wait(5.0)
+            return TEXT
+
+        with (
+            patch.object(image_drafts, "engine_status_cached", return_value=STATUS),
+            patch.object(image_drafts, "transcribe", side_effect=slow_transcribe) as transcribe,
+        ):
+            first = self._upload(payload)
+            self.assertEqual(first.status_code, 202, first.text)
+            self.assertTrue(started.wait(3.0))
+            second = self._upload(payload)
+            self.assertEqual(second.status_code, 202, second.text)
+            self.assertTrue(second.json()["reused"])
+            self.assertEqual(second.json()["id"], first.json()["id"])
+            self.assertEqual(second.json()["ocr_state"], "running")
+            release.set()
+            self._wait(first.json()["id"], "done")
+
+        self.assertEqual(transcribe.call_count, 1)
+        self.assertEqual(self._draft_rows(), 1)
 
     def test_cancel_while_running_discards_the_result(self) -> None:
         started = threading.Event()

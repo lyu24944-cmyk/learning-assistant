@@ -36,9 +36,22 @@ async function readJson(response) {
   response = resolved;
   if (!response.ok) {
     const detail = body.detail;
-    throw new Error(typeof detail === "string" ? detail : `接口返回 ${response.status}`);
+    const error = new Error(typeof detail === "string" ? detail : `接口返回 ${response.status}`);
+    error.code = body.code || "";
+    error.status = response.status;
+    throw error;
   }
   return body;
+}
+
+const UPLOAD_ERRORS = {
+  draft_busy: "上一张还在识别，等它出来再传下一张。",
+  upload_rate_limited: "今天传得有点多，歇一会儿再试。",
+  ocr_queue_full: "前面还有人在识别，约 30 秒后再试。",
+};
+
+function uploadErrorMessage(err) {
+  return UPLOAD_ERRORS[err?.code] || err?.message || "没有收下这张图";
 }
 
 function Card({ item, showMark }) {
@@ -1081,6 +1094,11 @@ function RecognizePage() {
   const [items, setItems] = useState([]);
   const [localError, setLocalError] = useState("");
   const [saved, setSaved] = useState(null);
+  const [localPreview, setLocalPreview] = useState("");
+  const [polling, setPolling] = useState(false);
+  const [draftId, setDraftId] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1101,6 +1119,77 @@ function RecognizePage() {
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      if (localPreview) {
+        URL.revokeObjectURL(localPreview);
+      }
+    },
+    [localPreview],
+  );
+
+  const busy = Boolean(draft && ["queued", "running"].includes(draft.ocr_state));
+
+  useEffect(() => {
+    if (!busy) {
+      setElapsed(0);
+      return undefined;
+    }
+    const timer = setInterval(() => setElapsed((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+
+  useEffect(() => {
+    if (!polling || !draftId) {
+      return undefined;
+    }
+    let cancelled = false;
+    let timer = null;
+    const startedAt = Date.now();
+
+    async function tick() {
+      if (cancelled) {
+        return;
+      }
+      if (Date.now() - startedAt > 60000) {
+        setLocalError("识别超过 60 秒还没回来。可以点「重新识别」，或取消后重传。");
+        setPolling(false);
+        return;
+      }
+      try {
+        const body = await readJson(await apiFetch(`/api/image-drafts/${draftId}`, {}));
+        if (cancelled) {
+          return;
+        }
+        setDraft(body);
+        if (body.ocr_state === "done") {
+          setItems(draftItems(body));
+        }
+        if (body.ocr_state === "failed") {
+          setItems([]);
+        }
+        if (body.poll_after_ms > 0) {
+          timer = setTimeout(tick, body.poll_after_ms);
+        } else {
+          setPolling(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLocalError(err.message || "读不到识别进度");
+          setPolling(false);
+        }
+      }
+    }
+
+    timer = setTimeout(tick, 800);
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [polling, draftId]);
+
   function updateItem(index, field, value) {
     setItems((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: value } : item)));
   }
@@ -1108,11 +1197,26 @@ function RecognizePage() {
   async function onFile(event) {
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
-    if (!file) {
+    if (!file || uploading) {
       return;
     }
+    setUploading(true);
     setLocalError("");
     setSaved(null);
+    setItems([]);
+    setPolling(false);
+    const preview = URL.createObjectURL(file);
+    setLocalPreview(preview);
+    setDraft({
+      id: null,
+      status: "pending",
+      ocr_state: "queued",
+      mode: "识别草稿",
+      ocr_text: "",
+      ocr_error: "",
+      candidate: {},
+      preview_url: preview,
+    });
     const form = new FormData();
     form.append("file", file);
     try {
@@ -1120,16 +1224,50 @@ function RecognizePage() {
         await apiFetch("/api/image-drafts", { method: "POST", body: form }),
       );
       setDraft(body);
-      setItems(draftItems(body));
+      setDraftId(body.id);
+      if (body.reused || body.ocr_state === "done") {
+        setItems(draftItems(body));
+        setPolling(false);
+      } else if (body.ocr_state === "failed") {
+        setItems([]);
+        setPolling(false);
+      } else {
+        setPolling(true);
+      }
     } catch (err) {
       setDraft(null);
       setItems([]);
-      setLocalError(err.message || "没有收下这张图");
+      setDraftId(null);
+      setPolling(false);
+      setLocalError(uploadErrorMessage(err));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function retryDraft() {
+    if (!draft?.id) {
+      return;
+    }
+    setLocalError("");
+    setSaved(null);
+    try {
+      const body = await readJson(
+        await apiFetch(`/api/image-drafts/${draft.id}/retry`, { method: "POST" }),
+      );
+      setDraft(body);
+      setItems([]);
+      setPolling(body.ocr_state === "queued" || body.ocr_state === "running");
+    } catch (err) {
+      setLocalError(err.message || "没能重新识别");
     }
   }
 
   async function confirmDraft() {
     setLocalError("");
+    if (!draft?.id || busy) {
+      return;
+    }
     const payload = items.map((item) => ({
       ...item,
       截止日期: normalizeDeadline(item.截止日期 || ""),
@@ -1155,6 +1293,7 @@ function RecognizePage() {
 
   async function cancelDraft() {
     setLocalError("");
+    setPolling(false);
     try {
       await readJson(
         await apiFetch(`/api/image-drafts/${draft.id}/cancel`, { method: "POST" }),
@@ -1162,6 +1301,7 @@ function RecognizePage() {
       setDraft(null);
       setItems([]);
       setSaved(null);
+      setDraftId(null);
     } catch (err) {
       setLocalError(err.message || "没有取消");
     }
@@ -1185,20 +1325,36 @@ function RecognizePage() {
       <form className="add-form">
         <label className="span-2">
           选择图片（PNG、JPEG、GIF、WEBP、BMP）
-          <input type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" onChange={onFile} />
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+            onChange={onFile}
+            disabled={uploading}
+          />
         </label>
       </form>
       {localError ? <p className="error">{localError}</p> : null}
+      {busy ? (
+        <p className="note">
+          {draft.ocr_state === "running"
+            ? `正在识别…（已等 ${elapsed} 秒）`
+            : draft.queue_position > 0
+              ? `已收到，前面还有 ${draft.queue_position} 个，约 ${draft.queue_position * 3} 秒`
+              : `已收到，马上开始…（已等 ${elapsed} 秒）`}
+        </p>
+      ) : null}
       {draft ? (
         <div className="query-layout columns">
           <section className="panel">
             <h2>{manual ? "人工补录，不是识别结果" : "识别原文"}</h2>
             {draft.ocr_error ? <p className="error">{draft.ocr_error}</p> : null}
-            <pre className="quote">{draft.ocr_text || "没有读出文字。"}</pre>
+            <pre className="quote">
+              {busy ? "正在识别，先别急着填。" : draft.ocr_text || "没有读出文字。"}
+            </pre>
             {draft.candidate?.空白规范化 && draft.candidate.空白规范化 !== draft.ocr_text ? (
               <p className="note">空白规范化只删汉字间空格，不改错字：{draft.candidate.空白规范化}</p>
             ) : null}
-            <img src={draft.preview_url} alt="原图生成的预览" />
+            <img src={localPreview || draft.preview_url} alt="原图生成的预览" />
           </section>
           <section className="panel">
             <h2>{manual ? "自己填写" : "可编辑候选"}</h2>
@@ -1273,9 +1429,14 @@ function RecognizePage() {
               </p>
             ) : (
               <div className="actions">
-                <button type="button" onClick={confirmDraft}>
-                  {manual ? "按人工补录保存" : "确认写入我的记录"}
+                <button type="button" onClick={confirmDraft} disabled={busy}>
+                  {busy ? "识别中，稍等" : manual ? "按人工补录保存" : "确认写入我的记录"}
                 </button>
+                {draft.ocr_state === "failed" && draft.id && (draft.ocr_attempts || 0) < 3 ? (
+                  <button type="button" onClick={retryDraft}>
+                    重新识别
+                  </button>
+                ) : null}
                 <button type="button" className="danger" onClick={cancelDraft}>
                   取消
                 </button>
