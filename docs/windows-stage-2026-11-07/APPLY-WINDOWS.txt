@@ -1,0 +1,9 @@
+识图更新：Windows 原生识别原文原样保存。
+汉字之间的空格只在匹配时删除，不把且月改成11月，不补网址标点。
+日期不是公历时，报名/作品提交事项仍保留，截止日期为未找到，不提醒。
+不要覆盖 data\app.sqlite 或 data\private。
+本包没有数据库、密钥、原图、node_modules、dist、Tesseract 安装包。
+名单见 MANIFEST.txt。
+
+请在暂存目录再跑六个模块的 unittest，并用同一张合成海报看识别原文。
+云端没有跑 Windows.Media.Ocr。

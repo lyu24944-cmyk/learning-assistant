@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.DS_Store
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+data/*.sqlite
+data/*.sqlite-*
+data/private/
+data/outbox/
+data/backups/
+.env*
+logs/
+.pytest_cache/
+.ruff_cache/
+*.tar.gz

@@ -1,0 +1,7 @@
+{
+  "info_type": "竞赛",
+  "allowed_info_types": ["竞赛", "实习", "考研"],
+  "reminder_within_days": 7,
+  "timezone": "Asia/Shanghai",
+  "reminder_hour_local": "08:00"
+}
