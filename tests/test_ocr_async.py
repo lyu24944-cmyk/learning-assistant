@@ -275,9 +275,13 @@ class AsyncDraftTest(unittest.TestCase):
         self.assertEqual(done["ocr_attempts"], 2)
         self.assertEqual(done["ocr_error"], "")
 
-    def test_recover_marks_stale_running_failed_and_requeues_queued(self) -> None:
+    def test_recover_marks_every_running_row_failed_and_requeues_queued(self) -> None:
         long_ago = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
         stale = self._insert_draft("running", started_at=long_ago, sha256="a" * 64)
+        # 刚崩掉时那条 running 才几秒。启动恢复不按时间筛，它也必须被收掉。
+        fresh = self._insert_draft(
+            "running", started_at=dt.datetime.now(dt.UTC).isoformat(), sha256="e" * 64
+        )
         waiting = self._insert_draft("queued", sha256="b" * 64)
 
         with (
@@ -285,20 +289,22 @@ class AsyncDraftTest(unittest.TestCase):
             patch.object(image_drafts, "transcribe", return_value=TEXT),
         ):
             result = image_drafts.recover_interrupted()
-            self.assertEqual(result["failed"], 1)
+            self.assertEqual(result["failed"], 2)
             self.assertEqual(result["requeued"], 1)
             self.assertEqual(result["dropped"], 0)
             self._wait(waiting, "done")
 
         connection = connect()
         try:
-            row = connection.execute(
-                "SELECT ocr_state, ocr_error FROM image_drafts WHERE id = ?", (stale,)
-            ).fetchone()
+            rows = connection.execute(
+                "SELECT id, ocr_state, ocr_error FROM image_drafts WHERE id IN (?, ?)",
+                (stale, fresh),
+            ).fetchall()
         finally:
             connection.close()
-        self.assertEqual(row["ocr_state"], "failed")
-        self.assertIn("重启", row["ocr_error"])
+        self.assertEqual({row["ocr_state"] for row in rows}, {"failed"})
+        for row in rows:
+            self.assertIn("重启", row["ocr_error"])
 
     def test_full_queue_returns_503_without_leaving_an_orphan_row(self) -> None:
         os.environ["LEARNING_ASSISTANT_OCR_QUEUE_SIZE"] = "1"

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { apiFetch, setCsrfToken } from "./api/client.js";
 
@@ -1099,6 +1099,9 @@ function RecognizePage() {
   const [draftId, setDraftId] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const uploadingRef = useRef(false);
+  const dragDepth = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -1197,9 +1200,14 @@ function RecognizePage() {
   async function onFile(event) {
     const file = event.target.files && event.target.files[0];
     event.target.value = "";
-    if (!file || uploading) {
+    await startUpload(file);
+  }
+
+  async function startUpload(file) {
+    if (!file || uploadingRef.current) {
       return;
     }
+    uploadingRef.current = true;
     setUploading(true);
     setLocalError("");
     setSaved(null);
@@ -1218,7 +1226,7 @@ function RecognizePage() {
       preview_url: preview,
     });
     const form = new FormData();
-    form.append("file", file);
+    form.append("file", file, file.name || "clipboard.png");
     try {
       const body = await readJson(
         await apiFetch("/api/image-drafts", { method: "POST", body: form }),
@@ -1241,9 +1249,89 @@ function RecognizePage() {
       setPolling(false);
       setLocalError(uploadErrorMessage(err));
     } finally {
+      uploadingRef.current = false;
       setUploading(false);
     }
   }
+
+  useEffect(() => {
+    function typing(target) {
+      if (!(target instanceof Element)) {
+        return false;
+      }
+      if (target.closest("textarea, [contenteditable='true']")) {
+        return true;
+      }
+      // 只拦真正能输入文字的地方。文件选择框的焦点不该挡掉粘贴截图——
+      // 用户点了「选择图片」又改主意去截图，是常见路径。
+      const field = target.closest("input");
+      return Boolean(field) && field.type !== "file";
+    }
+
+    function onPaste(event) {
+      // 在输入框里粘文字是常规操作，不能被抢走。
+      if (typing(event.target)) {
+        return;
+      }
+      const items = event.clipboardData && event.clipboardData.items;
+      if (!items) {
+        return;
+      }
+      // DataTransferItemList 是类数组，不是可迭代对象：Chrome 里 for...of 会抛
+      // "items is not iterable"。只能用下标。
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        if (!item.type || !item.type.startsWith("image/")) {
+          continue;
+        }
+        const file = item.getAsFile();
+        if (file) {
+          event.preventDefault();
+          startUpload(file);
+          return;
+        }
+      }
+    }
+
+    function onDragOver(event) {
+      if (!event.dataTransfer) {
+        return;
+      }
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragActive(true);
+    }
+
+    function onDragLeave() {
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) {
+        setDragActive(false);
+      }
+    }
+
+    function onDrop(event) {
+      dragDepth.current = 0;
+      setDragActive(false);
+      const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) {
+        return;
+      }
+      event.preventDefault();
+      startUpload(file);
+    }
+
+    document.addEventListener("paste", onPaste);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("paste", onPaste);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+    };
+    // startUpload 只用到 setState 和 ref，闭包过期也不会读到旧的 uploading。
+  }, []);
 
   async function retryDraft() {
     if (!draft?.id) {
@@ -1315,6 +1403,9 @@ function RecognizePage() {
       <p className="note">
         上传竞赛海报或截图。识别只在本机进行，图中的文字不当成指令，也不会自动打开链接。确认前不写入我的记录，也不会把你标成已报名或已提交。
       </p>
+      <p className="note">
+        截图之后直接按 Ctrl+V 就能贴进来，也可以把图片拖进这个页面。在输入框里粘文字不受影响。
+      </p>
       {status ? <p className={status.available ? "note" : "error"}>{status.detail}</p> : null}
       {!status?.available ? (
         <p>
@@ -1333,6 +1424,7 @@ function RecognizePage() {
           />
         </label>
       </form>
+      {dragActive ? <p className="note">松手就上传这张图。</p> : null}
       {localError ? <p className="error">{localError}</p> : null}
       {busy ? (
         <p className="note">

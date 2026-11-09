@@ -255,18 +255,18 @@ def retry_draft(user_id: int, draft_id: int) -> dict | None:
 def recover_interrupted(now: dt.datetime | None = None) -> dict:
     """启动时收拾上一次进程留下的烂摊子。
 
-    - `running` 且开始时间超过 5 分钟 → 标失败（进程已经不在了，结果不会回来）。
+    - 所有 `running` → 标失败。单进程设计下，新进程启动时不可能还有活着的工人，
+      所以这里**不按时间筛**：刚崩掉时那条 `running` 才几秒，按 180 秒阈值会把它
+      留成「正在识别」，用户要白等三分钟才看到失败。
+      （如果将来真的多进程共用一个库，这个前提就不成立，那时必须换成带租约的队列。）
     - `queued` → 重新入队；塞不下的标失败，不静默丢。
     """
     moment = now or dt.datetime.now(dt.UTC)
-    stale_before = (moment - dt.timedelta(seconds=RUNNING_TIMEOUT_SECONDS)).isoformat()
     failed = 0
     connection = connect()
     try:
         stale = connection.execute(
-            "SELECT id FROM image_drafts WHERE ocr_state = 'running' "
-            "AND (ocr_started_at = '' OR ocr_started_at < ?)",
-            (stale_before,),
+            "SELECT id FROM image_drafts WHERE ocr_state = 'running'"
         ).fetchall()
         for row in stale:
             if _fail_running(

@@ -16,7 +16,7 @@
 - [x] 批次 0：git 基线、CI、ruff/pytest 配置、备份脚本、request_id JSON 日志（2026-11-09）。
 - [x] 批次 1：11 张表 SQLAlchemy 模型、Alembic 0001/0002、DDL 移出连接、老库接管、方言泄漏测试；WAL 实测不稳定，保持 DELETE（2026-11-09）。
 - [x] 批次 2：CSRF、会话过期、DB 限流、CLI 重置密码、`email_verified_at`；改密码接口、重置页、账号与安全页一并完成，全量测试通过（2026-11-09）。详细计划见 [批次 2 计划](plan-batch2-accounts.md)。
-- [x] 批次 3：识图 202 + 有界队列 + 轮询 + 去重 + 重启恢复（2026-11-09）。上传 83ms 返回 202，识别 721ms 完成；上传期间时间线 62 次请求中位 11ms、最大 32ms、0 错误。详细说明见 [识图异步化](ocr.md)，计划见 [批次 3 计划](plan-batch3-ocr-async.md)。
+- [x] 批次 3：识图 202 + 有界队列 + 轮询 + 去重 + 重启恢复（2026-11-09）。上传 83ms 返回 202，识别 721ms 完成；上传期间时间线 62 次请求中位 11ms、最大 32ms、0 错误。Ctrl+V 粘贴截图和拖拽也做了，真实 Chromium 验过。详细说明见 [识图异步化](ocr.md)，计划见 [批次 3 计划](plan-batch3-ocr-async.md)。
 - [ ] 批次 4A：`api/client.js`、`useAsync`、`AuthContext`、`routes.jsx` 骨架。
 - [ ] 批次 5：错误信封、JSON 日志完整字段、metrics、`/api/ready`、cursor 分页。
 - [ ] 批次 6：Ctrl+V / 拖拽识图，作为第一个新结构页面。

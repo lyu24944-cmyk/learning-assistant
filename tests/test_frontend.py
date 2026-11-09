@@ -60,11 +60,30 @@ class FrontendSourceTest(unittest.TestCase):
         self.assertIn("前面还有", app)
         # 防双击：请求还没回来时输入框禁用，onFile 开头再兜一句。
         self.assertIn("disabled={uploading}", app)
-        self.assertIn("if (!file || uploading)", app)
+        self.assertIn("if (!file || uploadingRef.current)", app)
         # 准入被拒的三种文案分开，不能一个「失败了」打天下。
         self.assertIn("draft_busy", app)
         self.assertIn("upload_rate_limited", app)
         self.assertIn("ocr_queue_full", app)
+
+    def test_paste_and_drop_share_the_same_upload_path(self) -> None:
+        app = APP.read_text(encoding="utf-8")
+        # 粘贴：从 clipboardData.items 找 image/*，交给同一个 startUpload。
+        self.assertIn('document.addEventListener("paste"', app)
+        self.assertIn("clipboardData.items", app)
+        self.assertIn("getAsFile()", app)
+        self.assertIn("startUpload(file)", app)
+        # 焦点守卫：在输入框里粘文字不能被抢走；文件选择框不算「在打字」。
+        self.assertIn("textarea, [contenteditable='true']", app)
+        self.assertIn('field.type !== "file"', app)
+        # 拖拽：同一个处理函数，取 dataTransfer.files。
+        self.assertIn('document.addEventListener("drop"', app)
+        self.assertIn("dataTransfer.files", app)
+        self.assertIn("松手就上传这张图", app)
+        # 卸载时必须摘掉监听，否则换页面后还会截走粘贴。
+        self.assertIn('document.removeEventListener("paste"', app)
+        self.assertIn('document.removeEventListener("drop"', app)
+        self.assertIn("Ctrl+V", app)
 
     def test_frontend_production_build(self) -> None:
         npm = _npm_command()

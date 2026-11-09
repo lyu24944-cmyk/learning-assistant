@@ -118,7 +118,7 @@ except queue.Full:
 
 **重启恢复**：进程内的队列有个天生的毛病——进程一死，队列就没了。能做的只有「不静默丢」：
 
-- 启动时扫一遍 `ocr_state = 'running'` 且 `ocr_started_at` 超过 5 分钟的行 → 标 `failed`，文案「服务重启，识别中断，请重试」。
+- 启动时扫一遍 `ocr_state = 'running'` 的行 → 全标 `failed`，文案「服务重启，识别中断，请重试」。（不按时间筛，理由见 16.2）
 - 启动时扫一遍 `ocr_state = 'queued'` 的行 → 重新入队，最多 20 个，超出的标 `failed`。
 
 这做不到「绝不丢」，但能做到「用户看得见」。真要「绝不丢」得上 Redis + RQ/Arq，这一批不引入。
@@ -651,7 +651,7 @@ useEffect(() => {
 
 这样做的副作用：刷新页面后 `draft` 从服务端读，`preview_url` 是相对路径，需要能正常显示。现有代码已经这么用了，不用改。
 
-### 7.5 粘贴截图：不用先去文件夹找图（建议，待拍板）
+### 7.5 粘贴截图：不用先去文件夹找图（已做，2026-11-09）
 
 截图之后按 Ctrl+V 直接贴进识图页，比「保存到桌面 → 打开文件选择框 → 找到那张图」少三步。技术上没有障碍：
 
@@ -662,11 +662,22 @@ useEffect(() => {
 实现要点：
 
 1. 监听挂在 `document` 上，只在这个页面挂（`useEffect` 里加，卸载时 `removeEventListener`）。
-2. **先判断焦点**：`if (event.target.closest("input, textarea")) return;`——否则会抢掉用户在输入框里粘文字的常规操作。
+2. **先判断焦点**：在文本框里粘文字不能被抢走。
 3. 从 `clipboardData.items` 里找 `type.startsWith("image/")` 的项，`getAsFile()` 拿到 Blob，交给同一个上传函数。
 4. 顺手把 `dragover` / `drop` 也接上（同一个处理函数，`dataTransfer.files[0]`），从资源管理器拖进来也能用，只多十行。
 
+实施时踩到的两个坑，写下来免得下次再踩：
+
+- **`DataTransferItemList` 不是可迭代对象。** Chrome 里 `for (const item of clipboardData.items)` 直接抛
+  `items is not iterable`。它是类数组，只能 `items[index]` + `items.length` 下标循环。
+- **焦点守卫不能笼统地拦 `input`。** 用户点了「选择图片」又改主意去截图，焦点还停在
+  `input[type=file]` 上；这时粘贴会被误判成「在打字」而静默失效。只拦 `textarea`、
+  `[contenteditable]` 和 `type !== "file"` 的 `input`。
+
 一个要提前知道的副作用：从剪贴板拿到的 PNG 是浏览器重新编码的，字节和你「另存为」的那个文件不一样，`sha256` 对不上，所以「先粘贴一次、再从文件夹传同一张」会各识别一次。不影响正确性，只是去重在这条路径上失效。
+
+验收（真实 Chromium，临时库，2026-11-09）：Ctrl+V → `preventDefault` 为真、`POST /api/image-drafts` 返回 202、草稿面板出现；
+拖入文件 → 202；在文本框里粘图 → 新增上传 0 次。
 
 不做也不影响功能，只是每次截图多三次点击。估 0.2 人日，含手动验收。
 
@@ -903,6 +914,8 @@ reaper 和 `queue_position` 可以砍，但要知道代价：前者砍了就是�
 - **C. 去重 + 重启恢复**：本批一起做（推荐，共 0.5 人日，含在途复用），还是拆成 3B 留到后面？
 - **D. 粘贴截图**：做（推荐，+0.2 人日，截图后按 Ctrl+V 直接贴），还是不做（保持只走文件选择框）？
 
+已拍板（2026-11-09 21:40）：D 做。Ctrl+V 与拖拽已补做，见 7.5 与 16.5。
+
 其余按本文执行。你确认后，我按第 8 节的顺序做，每完成一步给一条「改了什么、怎么验」的短报告，最后合成一个 PR 再打 `batch-3` tag。
 
 ---
@@ -954,7 +967,7 @@ reaper 和 `queue_position` 可以砍，但要知道代价：前者砍了就是�
 | 引擎状态缓存 300 秒 | 完成 | `src/ocr.py` |
 | 同步开关 | 完成 | `LEARNING_ASSISTANT_OCR_SYNC` |
 | 日志五个字段 + `ocr_reaped` | 完成 | `src/logging.py` |
-| 粘贴截图（7.5） | **未做** | 第 14 节标的是「可选，待拍板 D」，没有拍板就不做 |
+| 粘贴截图 / 拖拽（7.5） | 完成（2026-11-09 补做） | `frontend/src/App.jsx`，真实 Chromium 验过 |
 
 ### 16.2 与计划不一致的三处
 
@@ -964,6 +977,10 @@ reaper 和 `queue_position` 可以砍，但要知道代价：前者砍了就是�
    `ocr_queue` 只提供 `requeue(ids)`。
 3. **新增 `LEARNING_ASSISTANT_OCR_UNFINISHED_LIMIT` 环境变量。** 第 9.3 节第 15 条要求
    「`maxsize=1` + 放宽单用户上限」，上限写死就没法测那条分支。默认仍是 2。
+4. **启动恢复不按时间筛。** 第 1.6 节写的是「`running` 且超过 5 分钟」。但单进程设计下，
+   新进程启动时不可能还有活着的工人；按阈值筛会让刚崩掉的那条 `running` 留成「正在识别」，
+   用户白等三分钟。改成启动时全标失败。多进程共用一个库时这个前提不成立，
+   那时要换成带租约的队列，见第 8 节。
 
 ### 16.3 实施中补的两个洞
 
@@ -985,3 +1002,20 @@ reaper 和 `queue_position` 可以砍，但要知道代价：前者砍了就是�
 | 写入记录 | 0 条（确认前不写） |
 
 改动前同一场景里，那 62 次时间线请求会排在识别后面。
+
+### 16.5 补做：粘贴截图与拖拽（7.5）
+
+2026-11-09 21:40 拍板 D 之后补做，只改前端，后端一行没动。
+
+- `onFile` 拆出 `startUpload(file)`，文件选择、Ctrl+V、拖拽三条入口共用同一个上传函数。
+- `document` 上挂 `paste` / `dragover` / `dragleave` / `drop`，`useEffect` 卸载时摘掉。
+- 双击防护从 `useState` 的 `uploading` 换成 `uploadingRef`：监听器只挂一次，闭包里读不到最新的 state。
+- 拖拽用 `dragDepth` 计数，避免 `dragleave` 在子元素间抖动导致提示闪烁。
+
+真实 Chromium（临时库、临时后端）验收：
+
+| 操作 | 结果 |
+| --- | --- |
+| 页面内派发带 PNG 的 `paste` | `defaultPrevented=true`，`POST /api/image-drafts` 返回 202，草稿面板出现 |
+| 派发带 PNG 的 `drop` | 202 |
+| 焦点在文本框时粘图 | 新增上传 0 次（守卫生效） |
