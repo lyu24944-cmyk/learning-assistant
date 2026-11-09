@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -34,8 +34,16 @@ def get_engine(url: str | None = None) -> Engine:
             kwargs["connect_args"] = {"check_same_thread": False}
             kwargs["poolclass"] = NullPool
         engine = create_engine(resolved, **kwargs)
+        if resolved.startswith("sqlite"):
+            # 批次 1 只给 sqlite_adapter.connect() 配了连接参数，ORM 连接漏了。
+            # 放在这里，session() 和 connect() 的锁等待、外键行为才一致。
+            event.listen(engine, "connect", _configure_sqlite)
         _engines[resolved] = engine
     return engine
+
+
+def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+    sqlite_adapter.configure_dbapi(dbapi_connection)
 
 
 def _session_factory() -> sessionmaker[Session]:

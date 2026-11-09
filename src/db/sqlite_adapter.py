@@ -32,11 +32,24 @@ def journal_mode() -> str:
     return raw if raw in {"WAL", "DELETE"} else "DELETE"
 
 
+def configure_dbapi(dbapi_connection) -> None:
+    """给 sqlite3 连接设 PRAGMA。原生连接和 SQLAlchemy 的 DBAPI 连接共用这一处。
+
+    SQLAlchemy 的 connect 事件传进来的是 sqlite3.Connection，不是
+    sqlite3.Connection 的子类；只用到 cursor()，所以不标类型。
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA busy_timeout = 5000")
+        cursor.execute("PRAGMA foreign_keys = ON")
+        cursor.execute("PRAGMA synchronous = NORMAL")
+    finally:
+        cursor.close()
+
+
 def configure(connection: sqlite3.Connection) -> None:
     """并发写入排队等待，而不是立刻报锁。"""
-    connection.execute("PRAGMA busy_timeout = 5000")
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA synchronous = NORMAL")
+    configure_dbapi(connection)
 
 
 def connect() -> sqlite3.Connection:

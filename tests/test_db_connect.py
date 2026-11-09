@@ -6,8 +6,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
-from src.db import connect, init_db, reset_for_tests
+from src.db import connect, init_db, reset_for_tests, session
 
 
 @pytest.fixture(autouse=True)
@@ -44,3 +45,14 @@ def test_connect_does_not_run_ddl(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         if statement.lstrip().upper().startswith(("CREATE", "ALTER", "DROP"))
     ]
     assert not ddl, f"connect() 不应执行 DDL：{ddl}"
+
+
+def test_session_connections_get_the_same_pragmas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = tmp_path / "pragmas.sqlite"
+    monkeypatch.setenv("LEARNING_ASSISTANT_DB", str(db))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    init_db()
+
+    with session() as current:
+        assert current.execute(text("PRAGMA foreign_keys")).scalar() == 1
+        assert current.execute(text("PRAGMA busy_timeout")).scalar() == 5000
