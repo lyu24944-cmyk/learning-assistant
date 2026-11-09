@@ -25,8 +25,8 @@ from src.db import connect, write_retry, write_transaction
 from src.db.sqlite_adapter import rollback_quiet
 from src.ocr import OcrFailed, OcrUnavailable, engine_status_cached, transcribe
 from src.poster import parse_poster
-from src.records import validate_records
 from src.ratelimit import note_upload, upload_blocked
+from src.records import validate_records
 from src.review import current_week_key
 from src.schema import DRAFT, NOT_FOUND, RECORD_FIELDS, REMIND_NO, REMIND_YES, VERIFIED
 from src.store import _COLUMNS, _to_storage
@@ -43,7 +43,6 @@ POLL_AFTER_QUEUED = 800
 POLL_AFTER_RUNNING = 1000
 POLL_AFTER_BUSY = 2000
 BUSY_DEPTH = 15
-SECONDS_PER_TASK = 3
 
 _INSERT = """
 INSERT INTO image_drafts (

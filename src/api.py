@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from src import ocr_queue
 from src.accounts import (
     AccountError,
     change_password,
@@ -45,7 +46,6 @@ from src.image_drafts import (
     run_ocr,
 )
 from src.logging import configure_logging, log_request, new_request_id, request_id_var
-from src import ocr_queue
 from src.ocr import engine_status_cached
 from src.prefs import get as get_reminder_prefs
 from src.prefs import update as update_reminder_prefs
