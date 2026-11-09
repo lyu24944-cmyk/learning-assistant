@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import time
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.accounts import AccountError, login, logout, register, user_for_token
+from src.bitmap import MAX_BYTES
 from src.config import load_settings, resolve_today
+from src.courses import add_course, add_material, list_courses, list_materials, material_file
+from src.image_drafts import cancel_draft, confirm_draft, create_draft, draft_file, get_draft
+from src.logging import configure_logging, log_request, new_request_id, request_id_var
+from src.ocr import engine_status
 from src.prefs import get as get_reminder_prefs
 from src.prefs import update as update_reminder_prefs
 from src.ratelimit import (
@@ -21,10 +27,6 @@ from src.ratelimit import (
     note_registration,
     register_blocked,
 )
-from src.bitmap import MAX_BYTES
-from src.courses import add_course, add_material, list_courses, list_materials, material_file
-from src.image_drafts import cancel_draft, confirm_draft, create_draft, draft_file, get_draft
-from src.ocr import engine_status
 from src.review import get_current, save_current
 from src.store import (
     add_user_record,
@@ -47,6 +49,37 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
+configure_logging()
+
+
+@app.middleware("http")
+async def request_log(request: Request, call_next):
+    """给每个请求一个 request_id，并在结束时记一行 JSON。"""
+    request_id = new_request_id(request.headers.get("X-Request-ID"))
+    token = request_id_var.set(request_id)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status=500,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            error_code="internal_error",
+        )
+        raise
+    else:
+        response.headers["X-Request-ID"] = request_id
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+        return response
+    finally:
+        request_id_var.reset(token)
 
 
 class Credentials(BaseModel):

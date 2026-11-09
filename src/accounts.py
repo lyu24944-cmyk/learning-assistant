@@ -144,7 +144,7 @@ def _new_session(connection, user_id: int, now: str) -> str:
 
 
 def _now_dt() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.UTC)
 
 
 def _now() -> str:

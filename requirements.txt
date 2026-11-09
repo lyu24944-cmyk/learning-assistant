@@ -4,3 +4,5 @@ httpx==0.28.1
 tzdata==2025.2
 pillow==11.0.0
 python-multipart==0.0.20
+SQLAlchemy==2.0.57
+alembic==1.20.1

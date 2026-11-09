@@ -15,8 +15,7 @@ from PIL import Image
 from src.ocr_tesseract import status as tesseract_status
 from src.ocr_tesseract import transcribe as transcribe_tesseract
 from src.ocr_types import OcrFailed, OcrUnavailable
-from src.ocr_windows import describe_recognizer_languages
-from src.ocr_windows import prepare_ocr_image
+from src.ocr_windows import describe_recognizer_languages, prepare_ocr_image
 from src.ocr_windows import status as windows_status
 from src.ocr_windows import transcribe as transcribe_windows
 

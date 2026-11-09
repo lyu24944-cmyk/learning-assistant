@@ -45,7 +45,7 @@ def create_draft(user_id: int, data: bytes) -> dict:
     candidate["识别语言"] = list(status.get("languages") or [])
     storage_key = allocate_key()
     original_rel, preview_rel = write_private(user_id, storage_key, extension, data, preview_bytes(image))
-    created_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    created_at = dt.datetime.now(dt.UTC).isoformat()
     connection = connect()
     try:
         cursor = connection.execute(
@@ -154,7 +154,7 @@ def confirm_draft(user_id: int, draft_id: int, items: list[dict]) -> dict | None
             raise ValueError("；".join(errors))
         material_id = _insert_material(connection, user_id, row, records[0], manual)
         week_key = current_week_key()
-        stamp = dt.datetime.now(dt.timezone.utc).isoformat()
+        stamp = dt.datetime.now(dt.UTC).isoformat()
         saved = []
         for record in records:
             record_id = _insert_record(connection, user_id, record)
@@ -255,7 +255,7 @@ def _insert_material(connection, user_id: int, draft, record: dict[str, str], ma
             title,
             "人工补录原图" if manual else "识图原图",
             hint,
-            dt.datetime.now(dt.timezone.utc).isoformat(),
+            dt.datetime.now(dt.UTC).isoformat(),
             draft["original_rel"],
             int(draft["id"]),
         ),

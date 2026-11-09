@@ -10,8 +10,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfoNotFoundError
 
 from src.config import resolve_today
-from tests.run_text import run_text
-from src.extract import extract_notice, explicit_dates
+from src.extract import explicit_dates, extract_notice
 from src.records import EXAMPLE_RECORDS, REAL_RECORDS, load_records, validate_records
 from src.reminder import DEFAULT_RECORDS as REMINDER_RECORDS
 from src.reminder import main as reminder_main
@@ -21,6 +20,7 @@ from src.score_exam import load_samples, reference_predictions, score
 from src.timeline import DEFAULT_RECORDS as TIMELINE_RECORDS
 from src.timeline import main as timeline_main
 from src.timeline import render_timeline, select_timeline
+from tests.run_text import run_text
 
 ROOT = Path(__file__).resolve().parents[1]
 

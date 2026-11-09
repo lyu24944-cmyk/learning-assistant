@@ -1,0 +1,27 @@
+[project]
+name = "learning-assistant"
+version = "0.2.0"
+description = "本地学习助手：竞赛截止、提醒、识图草稿"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["frontend", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# ocr_windows.py 里的 PowerShell 脚本是单行长字符串，不按 Python 行宽拆。
+# B008：FastAPI 的 Depends/File 就是写在默认参数里的，属于框架约定。
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true

@@ -59,7 +59,7 @@ def save_current(user_id: int, raw: dict) -> dict:
     )
     plan = f"下周计划：{next_goal or '未填写。'}"
     week_key = current_week_key()
-    updated_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    updated_at = dt.datetime.now(dt.UTC).isoformat()
     connection = connect()
     try:
         connection.execute(

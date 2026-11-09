@@ -100,7 +100,7 @@ def save_weekly_review(
     if not (done or stuck or nxt):
         raise ValueError("请至少填写一项：完成 / 卡住 / 下周目标")
     summary, plan = build_summary_and_plan(done=done, stuck=stuck, next_goals=nxt, week_start=start)
-    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    now = dt.datetime.now(dt.UTC).isoformat()
     connection = connect()
     try:
         connection.execute(

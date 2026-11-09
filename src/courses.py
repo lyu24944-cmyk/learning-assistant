@@ -126,7 +126,7 @@ def add_material(user_id: int, raw: dict) -> dict:
 
 
 def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
+    return dt.datetime.now(dt.UTC).isoformat()
 
 
 def _course(row) -> dict:

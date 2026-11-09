@@ -39,7 +39,7 @@ def update(user_id: int, raw: dict) -> dict:
     if within_days < 1:
         raise ValueError("提前几天必须是正整数。")
     email_enabled = bool(raw.get("是否邮件"))
-    updated_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    updated_at = dt.datetime.now(dt.UTC).isoformat()
     connection = connect()
     try:
         connection.execute(
