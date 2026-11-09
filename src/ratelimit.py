@@ -84,6 +84,15 @@ def _hit(key: Hashable, window: float, now: float | None = None) -> None:
     stamp = int(time.time() if now is None else now)
     try:
         with session() as db:
+            row = db.execute(
+                text("SELECT window_start FROM rate_limits WHERE bucket_key = :key"),
+                {"key": _key_text(key)},
+            ).first()
+            start = stamp
+            if row is not None and stamp - int(row[0]) < window:
+                # 窗口还没过期，沿用原来的起点；不能拿「当前秒」当起点，
+                # 否则每秒都会重置计数，30 次注册限制永远打不到。
+                start = int(row[0])
             db.execute(
                 text(
                     """
@@ -95,7 +104,7 @@ def _hit(key: Hashable, window: float, now: float | None = None) -> None:
                       window_start = excluded.window_start
                     """
                 ),
-                {"key": _key_text(key), "start": stamp},
+                {"key": _key_text(key), "start": start},
             )
             if stamp - _last_cleanup >= _CLEANUP_SECONDS:
                 db.execute(

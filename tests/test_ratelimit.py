@@ -58,6 +58,22 @@ def test_register_limit_and_off_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ratelimit.register_blocked(client) is False
 
 
+def test_hits_across_seconds_do_not_reset_the_window() -> None:
+    key = "register:test"
+    base = 1_000.0
+    for index in range(ratelimit.REGISTER_LIMIT):
+        ratelimit._hit(key, ratelimit.REGISTER_WINDOW, now=base + index * 0.4)
+    assert (
+        ratelimit._check(
+            key,
+            ratelimit.REGISTER_LIMIT,
+            ratelimit.REGISTER_WINDOW,
+            now=base + 20,
+        )
+        is False
+    )
+
+
 def test_window_rolls_over() -> None:
     key = "login:127.0.0.1:a@example.com"
     with session() as db:
