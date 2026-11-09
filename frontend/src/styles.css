@@ -268,3 +268,28 @@ button.danger {
     grid-template-columns: 1fr;
   }
 }
+
+.success {
+  color: #166534;
+}
+
+.plain-list {
+  list-style: none;
+  margin: 0.6rem 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.plain-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid #e7e5e4;
+}
+
+.plain-list li > span:first-child {
+  font-weight: 600;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { apiFetch, setCsrfToken } from "./api/client.js";
 
 const emptyContest = () => ({
   标题: "",
@@ -61,6 +62,7 @@ function Card({ item, showMark }) {
 
 export default function App() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [me, setMe] = useState(undefined);
   const [data, setData] = useState(null);
   const [reminders, setReminders] = useState(null);
@@ -75,9 +77,9 @@ export default function App() {
   async function loadViews(today) {
     const query = today ? `?today=${encodeURIComponent(today)}` : "";
     const [timeline, reminderBody, recordBody] = await Promise.all([
-      readJson(await fetch(`/api/timeline${query}`, { credentials: "include" })),
-      readJson(await fetch(`/api/reminders${query}`, { credentials: "include" })),
-      readJson(await fetch("/api/records", { credentials: "include" })),
+      readJson(await apiFetch(`/api/timeline${query}`, {})),
+      readJson(await apiFetch(`/api/reminders${query}`, {})),
+      readJson(await apiFetch("/api/records", {})),
     ]);
     setData(timeline);
     setReminders(reminderBody);
@@ -89,7 +91,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/me", { credentials: "include" })
+    apiFetch("/api/me", {})
       .then(async (response) => {
         if (response.status === 401) {
           return null;
@@ -102,7 +104,10 @@ export default function App() {
         }
         setMe(user);
         if (user) {
+          setCsrfToken(user.csrf_token);
           await loadViews("");
+        } else {
+          setCsrfToken("");
         }
       })
       .catch((err) => {
@@ -120,13 +125,13 @@ export default function App() {
     setError("");
     try {
       const user = await readJson(
-        await fetch(path, {
+        await apiFetch(path, {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
         }),
       );
+      setCsrfToken(user.csrf_token);
       setMe(user);
       setPassword("");
       navigate("/query");
@@ -156,9 +161,8 @@ export default function App() {
     }
     try {
       await readJson(
-        await fetch("/api/records", {
+        await apiFetch("/api/records", {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             标题: contest.标题.trim(),
@@ -183,12 +187,20 @@ export default function App() {
   }
 
   async function signOut() {
-    await fetch("/api/logout", { method: "POST", credentials: "include" });
-    setMe(null);
-    setData(null);
-    setReminders(null);
-    setMine([]);
-    navigate("/");
+    try {
+      await apiFetch("/api/logout", { method: "POST" });
+    } finally {
+      setCsrfToken("");
+      setMe(null);
+      setData(null);
+      setReminders(null);
+      setMine([]);
+      navigate("/");
+    }
+  }
+
+  if (location.pathname === "/reset") {
+    return <ResetPage />;
   }
 
   if (me === undefined) {
@@ -226,6 +238,7 @@ export default function App() {
               required
             />
           </label>
+          <p className="note">注册密码至少 10 位；老账号仍可用原密码登录。</p>
           <div className="actions">
             <button type="button" onClick={() => submit("/api/login")}>
               登录
@@ -252,6 +265,7 @@ export default function App() {
         <NavLink to="/courses">课程</NavLink>
         <NavLink to="/materials">资料夹</NavLink>
         <NavLink to="/settings/reminders">提醒设置</NavLink>
+        <NavLink to="/settings/account">账号与安全</NavLink>
         <button type="button" onClick={signOut}>
           退出
         </button>
@@ -292,6 +306,7 @@ export default function App() {
             path="/settings/reminders"
             element={<SettingsPage onSaved={() => loadViews(todayInput.trim())} />}
           />
+          <Route path="/settings/account" element={<AccountPage />} />
           <Route path="*" element={<Navigate to="/query" replace />} />
         </Routes>
       </div>
@@ -465,7 +480,7 @@ function MinePage() {
   const [draft, setDraft] = useState(null);
 
   async function load() {
-    const body = await fetch("/api/mine", { credentials: "include" }).then(readJson);
+    const body = await apiFetch("/api/mine", {}).then(readJson);
     setRows(body.records || []);
   }
 
@@ -493,9 +508,8 @@ function MinePage() {
     }
     try {
       await readJson(
-        await fetch(`/api/mine/${id}`, {
+        await apiFetch(`/api/mine/${id}`, {
           method: "PUT",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...draft, 截止日期: deadline }),
         }),
@@ -515,7 +529,7 @@ function MinePage() {
     setLocalError("");
     try {
       await readJson(
-        await fetch(`/api/mine/${id}`, { method: "DELETE", credentials: "include" }),
+        await apiFetch(`/api/mine/${id}`, { method: "DELETE" }),
       );
       await load();
     } catch (err) {
@@ -527,9 +541,8 @@ function MinePage() {
     setLocalError("");
     try {
       await readJson(
-        await fetch(`/api/mine/${id}`, {
+        await apiFetch(`/api/mine/${id}`, {
           method: "PATCH",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 状态: status }),
         }),
@@ -630,7 +643,7 @@ function CoursesPage() {
   const [localError, setLocalError] = useState("");
 
   async function load() {
-    const body = await fetch("/api/courses", { credentials: "include" }).then(readJson);
+    const body = await apiFetch("/api/courses", {}).then(readJson);
     setRows(body.courses || []);
   }
 
@@ -643,9 +656,8 @@ function CoursesPage() {
     setLocalError("");
     try {
       await readJson(
-        await fetch("/api/courses", {
+        await apiFetch("/api/courses", {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(form),
         }),
@@ -700,8 +712,8 @@ function MaterialsPage() {
   async function load(courseId) {
     const query = courseId ? `?course_id=${encodeURIComponent(courseId)}` : "";
     const [courseBody, materialBody] = await Promise.all([
-      fetch("/api/courses", { credentials: "include" }).then(readJson),
-      fetch(`/api/materials${query}`, { credentials: "include" }).then(readJson),
+      apiFetch("/api/courses", {}).then(readJson),
+      apiFetch(`/api/materials${query}`, {}).then(readJson),
     ]);
     setCourses(courseBody.courses || []);
     setRows(materialBody.materials || []);
@@ -716,9 +728,8 @@ function MaterialsPage() {
     setLocalError("");
     try {
       await readJson(
-        await fetch("/api/materials", {
+        await apiFetch("/api/materials", {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             title: form.title,
@@ -826,7 +837,7 @@ function ReviewPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/weekly-review", { credentials: "include" })
+    apiFetch("/api/weekly-review", {})
       .then(readJson)
       .then((body) => {
         if (cancelled) {
@@ -854,9 +865,8 @@ function ReviewPage() {
     setLocalError("");
     try {
       const body = await readJson(
-        await fetch("/api/weekly-review", {
+        await apiFetch("/api/weekly-review", {
           method: "PUT",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(form),
         }),
@@ -926,7 +936,7 @@ function SettingsPage({ onSaved }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/reminder-settings", { credentials: "include" })
+    apiFetch("/api/reminder-settings", {})
       .then(readJson)
       .then((body) => {
         if (!cancelled) {
@@ -963,9 +973,8 @@ function SettingsPage({ onSaved }) {
     }
     try {
       const saved = await readJson(
-        await fetch("/api/reminder-settings", {
+        await apiFetch("/api/reminder-settings", {
           method: "PUT",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             基准日: baseline,
@@ -1075,7 +1084,7 @@ function RecognizePage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/ocr/status", { credentials: "include" })
+    apiFetch("/api/ocr/status", {})
       .then(readJson)
       .then((body) => {
         if (!cancelled) {
@@ -1108,7 +1117,7 @@ function RecognizePage() {
     form.append("file", file);
     try {
       const body = await readJson(
-        await fetch("/api/image-drafts", { method: "POST", credentials: "include", body: form }),
+        await apiFetch("/api/image-drafts", { method: "POST", body: form }),
       );
       setDraft(body);
       setItems(draftItems(body));
@@ -1132,9 +1141,8 @@ function RecognizePage() {
     }
     try {
       const body = await readJson(
-        await fetch(`/api/image-drafts/${draft.id}/confirm`, {
+        await apiFetch(`/api/image-drafts/${draft.id}/confirm`, {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ items: payload }),
         }),
@@ -1149,7 +1157,7 @@ function RecognizePage() {
     setLocalError("");
     try {
       await readJson(
-        await fetch(`/api/image-drafts/${draft.id}/cancel`, { method: "POST", credentials: "include" }),
+        await apiFetch(`/api/image-drafts/${draft.id}/cancel`, { method: "POST" }),
       );
       setDraft(null);
       setItems([]);
@@ -1280,3 +1288,284 @@ function RecognizePage() {
   );
 }
 
+
+function ResetPage() {
+  const [token] = useState(() => {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    return params.get("token") || "";
+  });
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    window.history.replaceState(null, "", "/reset");
+  }, []);
+
+  async function onSubmit(event) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    if (password.length < 10) {
+      setError("密码至少 10 位。");
+      return;
+    }
+    if (password !== confirm) {
+      setError("两次输入的密码不一致。");
+      return;
+    }
+    try {
+      const body = await readJson(
+        await apiFetch("/api/auth/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, password }),
+        }),
+      );
+      if (body.ok) {
+        setDone(true);
+        setMessage("密码已重置，请用新密码登录。");
+        setPassword("");
+        setConfirm("");
+      }
+    } catch (err) {
+      setError(err.message || "没有完成重置");
+    }
+  }
+
+  if (!token) {
+    return (
+      <main className="login-screen">
+        <p className="eyebrow">学习助手</p>
+        <h1>重置密码</h1>
+        <p className="error">链接不完整。请让管理员重新生成。</p>
+        <p className="note"><a href="/">回登录页</a></p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="login-screen">
+      <p className="eyebrow">学习助手</p>
+      <h1>重置密码</h1>
+      <p className="note">链接 30 分钟内有效，只能用一次。</p>
+      {done ? (
+        <>
+          <p className="success">{message}</p>
+          <p className="note"><a href="/">去登录</a></p>
+        </>
+      ) : (
+        <form onSubmit={onSubmit}>
+          <label>
+            新密码
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              minLength={10}
+              required
+            />
+          </label>
+          <label>
+            再输一次
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(event) => setConfirm(event.target.value)}
+              minLength={10}
+              required
+            />
+          </label>
+          <div className="actions">
+            <button type="submit">重置密码</button>
+          </div>
+          {error ? <p className="error">{error}</p> : null}
+        </form>
+      )}
+    </main>
+  );
+}
+
+function AccountPage() {
+  const [me, setMe] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [form, setForm] = useState({ current_password: "", new_password: "", confirm: "" });
+
+  function shortTime(value) {
+    if (!value) {
+      return "未知";
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+  }
+
+  async function load() {
+    const [meBody, sessionBody] = await Promise.all([
+      readJson(await apiFetch("/api/me")),
+      readJson(await apiFetch("/api/sessions")),
+    ]);
+    setMe(meBody);
+    setSessions(sessionBody.sessions || []);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    load().catch((err) => {
+      if (!cancelled) {
+        setError(err.message || "读不到账号");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function revoke(id) {
+    setError("");
+    setMessage("");
+    try {
+      const body = await readJson(await apiFetch(`/api/sessions/${id}`, { method: "DELETE" }));
+      if (body.current) {
+        setCsrfToken("");
+        window.location.href = "/";
+        return;
+      }
+      await load();
+      setMessage("已退出那台设备。");
+    } catch (err) {
+      setError(err.message || "没有退出");
+    }
+  }
+
+  async function logoutAll() {
+    if (!window.confirm("确定退出所有设备？当前页面也会退出。")) {
+      return;
+    }
+    setError("");
+    try {
+      await readJson(await apiFetch("/api/auth/logout-all", { method: "POST" }));
+      setCsrfToken("");
+      window.location.href = "/";
+    } catch (err) {
+      setError(err.message || "没有退出");
+    }
+  }
+
+  async function changePassword(event) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    if (form.new_password.length < 10) {
+      setError("新密码至少 10 位。");
+      return;
+    }
+    if (form.new_password !== form.confirm) {
+      setError("两次输入的新密码不一致。");
+      return;
+    }
+    try {
+      await readJson(
+        await apiFetch("/api/auth/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            current_password: form.current_password,
+            new_password: form.new_password,
+          }),
+        }),
+      );
+      setForm({ current_password: "", new_password: "", confirm: "" });
+      setMessage("密码已改，其他设备已退出。");
+    } catch (err) {
+      setError(err.message || "没有改成");
+    }
+  }
+
+  if (!me) {
+    return (
+      <>
+        <h1>账号与安全</h1>
+        {error ? <p className="error">{error}</p> : <p>正在读取…</p>}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <h1>账号与安全</h1>
+      <p className="note">
+        {me.email} · {me.email_verified ? "邮箱已验证" : "邮箱未验证（不影响使用）"}
+      </p>
+      {error ? <p className="error">{error}</p> : null}
+      {message ? <p className="success">{message}</p> : null}
+
+      <section className="panel">
+        <h2>登录的设备</h2>
+        <ul className="plain-list">
+          {sessions.map((item) => (
+            <li key={item.id}>
+              <span>{item.current ? "当前浏览器" : "其他设备"}</span>
+              <span className="note" title={item.user_agent}>
+                最近使用：{shortTime(item.last_seen_at)}
+              </span>
+              {item.current ? null : (
+                <button type="button" onClick={() => revoke(item.id)}>
+                  退出
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+        <button type="button" className="danger" onClick={logoutAll}>
+          退出所有设备
+        </button>
+      </section>
+
+      <section className="panel">
+        <h2>改密码</h2>
+        <form className="add-form" onSubmit={changePassword}>
+          <label>
+            当前密码
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={form.current_password}
+              onChange={(event) => setForm({ ...form, current_password: event.target.value })}
+              required
+            />
+          </label>
+          <label>
+            新密码
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={form.new_password}
+              onChange={(event) => setForm({ ...form, new_password: event.target.value })}
+              minLength={10}
+              required
+            />
+          </label>
+          <label>
+            再输一次
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={form.confirm}
+              onChange={(event) => setForm({ ...form, confirm: event.target.value })}
+              minLength={10}
+              required
+            />
+          </label>
+          <button type="submit">改密码</button>
+        </form>
+        <p className="note">改完密码，其他设备上的登录会失效；当前浏览器保持登录。</p>
+      </section>
+    </>
+  );
+}

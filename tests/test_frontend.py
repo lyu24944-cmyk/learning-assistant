@@ -11,14 +11,21 @@ from tests.run_text import decode_utf8, run_text
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "frontend" / "src" / "App.jsx"
+CLIENT = ROOT / "frontend" / "src" / "api" / "client.js"
 CSS = ROOT / "frontend" / "src" / "styles.css"
 
 
 class FrontendSourceTest(unittest.TestCase):
     def test_pages_and_safety_markers_are_present(self) -> None:
         app = APP.read_text(encoding="utf-8")
+        client = CLIENT.read_text(encoding="utf-8")
         css = CSS.read_text(encoding="utf-8")
         self.assertNotIn("readJson(fetch(", app)
+        self.assertIn("X-CSRF-Token", client)
+        self.assertIn("apiFetch", app)
+        self.assertIn("账号与安全", app)
+        self.assertIn("重置密码", app)
+        self.assertIn("minLength={8}", app)
         self.assertIn('window.confirm("确定删除这条私人记录？', app)
         self.assertIn("复制今日待提醒", app)
         self.assertIn("导出纯文本", app)
